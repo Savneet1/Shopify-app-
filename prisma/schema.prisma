@@ -1,0 +1,392 @@
+// Boost-like Search, Filter & Discovery — PostgreSQL schema.
+//
+// Phase 1 (migrations 0001–0002): multi-tenant FOUNDATION — tenant root,
+// per-shop config, ops/idempotency, privacy, billing.
+// Phase 2 (migration 0003): catalog (product/variant/collection/…), the
+// versioned search index (index_version/product_search_doc/…), and sync/job
+// tables. Filter / merchandising / analytics tables remain DEFERRED to their
+// phases (see docs/FEATURE_MATRIX.md).
+//
+// Two database roles are used (see prisma/migrations/0002_rls_roles):
+//   DATABASE_URL        -> app_runtime (NOSUPERUSER, NOBYPASSRLS) at runtime
+//   DIRECT_DATABASE_URL -> app_owner (owns tables, runs migrations)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Shopify-managed session table (used by @shopify/shopify-app-session-storage-prisma).
+// This is authentication INFRASTRUCTURE, not a tenant business table: it is
+// read by the auth layer BY SESSION ID before any tenant context exists, so it
+// is intentionally NOT under app.shop_id RLS. Isolation for this table is
+// enforced by the authentication layer (session id is unguessable and derived
+// from Shopify-verified context). See docs/SECURITY.md.
+// ---------------------------------------------------------------------------
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+
+  @@map("session")
+}
+
+// ---------------------------------------------------------------------------
+// Tenant root. One row per installed shop. Its own `id` IS the tenant key
+// carried as `shop_id` on every tenant-owned table below and set as
+// `app.shop_id` by withShop().
+// ---------------------------------------------------------------------------
+model Shop {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopDomain     String    @unique @map("shop_domain")
+  shopifyShopGid String?   @map("shopify_shop_gid")
+  name           String?
+  email          String?
+  planName       String?   @map("plan_name")
+  accessScopes   String?   @map("access_scopes")
+  installedAt    DateTime? @map("installed_at")
+  uninstalledAt  DateTime? @map("uninstalled_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  settings         AppSetting[]
+  markets          Market[]
+  webhookReceipts  WebhookReceipt[]
+  themeReports     ThemeCompatReport[]
+  deletionRequests DataDeletionRequest[]
+  billing          BillingSubscription[]
+
+  @@map("shop")
+}
+
+model AppSetting {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId    String   @map("shop_id") @db.Uuid
+  key       String
+  value     Json     @db.JsonB
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, key])
+  @@index([shopId])
+  @@map("app_setting")
+}
+
+model Market {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId         String   @map("shop_id") @db.Uuid
+  shopifyMarketGid String? @map("shopify_market_gid")
+  name           String
+  currencyCode   String   @map("currency_code")
+  isPrimary      Boolean  @default(false) @map("is_primary")
+  enabled        Boolean  @default(true)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([shopId])
+  @@map("market")
+}
+
+// Webhook idempotency / receipt log. Makes duplicate & replayed deliveries safe.
+model WebhookReceipt {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId      String    @map("shop_id") @db.Uuid
+  webhookId   String    @map("webhook_id")
+  topic       String
+  apiVersion  String?   @map("api_version")
+  payloadHash String    @map("payload_hash")
+  status      String    @default("received")
+  receivedAt  DateTime  @default(now()) @map("received_at")
+  processedAt DateTime? @map("processed_at")
+  error       String?
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, webhookId])
+  @@index([webhookId])
+  @@map("webhook_receipt")
+}
+
+model ThemeCompatReport {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId    String   @map("shop_id") @db.Uuid
+  themeGid  String?  @map("theme_gid")
+  themeName String?  @map("theme_name")
+  role      String?
+  os2       Boolean?
+  status    String   @default("unknown")
+  details   Json?    @db.JsonB
+  checkedAt DateTime @default(now()) @map("checked_at")
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([shopId])
+  @@map("theme_compat_report")
+}
+
+// Records for mandatory privacy webhooks (customers/data_request, customers/redact, shop/redact).
+model DataDeletionRequest {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId           String    @map("shop_id") @db.Uuid
+  topic            String
+  shopifyCustomerId String?  @map("shopify_customer_id")
+  customerEmail    String?   @map("customer_email")
+  payload          Json      @db.JsonB
+  status           String    @default("pending")
+  requestedAt      DateTime  @default(now()) @map("requested_at")
+  processedAt      DateTime? @map("processed_at")
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([shopId])
+  @@map("data_deletion_request")
+}
+
+// Persistence for the billing abstraction (Phase 1 = provider-agnostic stub).
+model BillingSubscription {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId          String    @map("shop_id") @db.Uuid
+  provider        String    @default("stub")
+  plan            String    @default("free")
+  status          String    @default("inactive")
+  externalId      String?   @map("external_id")
+  test            Boolean   @default(true)
+  currentPeriodEnd DateTime? @map("current_period_end")
+  activatedAt     DateTime? @map("activated_at")
+  canceledAt      DateTime? @map("canceled_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([shopId])
+  @@map("billing_subscription")
+}
+
+// ===========================================================================
+// Phase 2 — catalog, versioned index, sync/jobs.
+// These are accessed at runtime via canonical SQL (app/lib/**), not Prisma
+// model methods; they are declared here so the Prisma schema documents the full
+// database. Foreign keys, RLS (+FORCE), and the partial "one active index"
+// unique index are defined in prisma/migrations/0003_phase2_catalog_index.
+// ===========================================================================
+
+model Product {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId           String    @map("shop_id") @db.Uuid
+  shopifyProductGid String   @map("shopify_product_gid")
+  handle           String?
+  title            String?
+  description      String?
+  vendor           String?
+  productType      String?   @map("product_type")
+  status           String?
+  tags             Json      @default("[]") @db.JsonB
+  options          Json      @default("[]") @db.JsonB
+  shopifyUpdatedAt DateTime? @map("shopify_updated_at")
+  deletedAt        DateTime? @map("deleted_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @default(now()) @map("updated_at")
+
+  @@unique([shopId, shopifyProductGid])
+  @@index([shopId])
+  @@map("product")
+}
+
+model Variant {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId            String    @map("shop_id") @db.Uuid
+  productId         String    @map("product_id") @db.Uuid
+  shopifyVariantGid String    @map("shopify_variant_gid")
+  sku               String?
+  barcode           String?
+  title             String?
+  price             Decimal?  @db.Decimal(12, 2)
+  position          Int?
+  selectedOptions   Json      @default("[]") @map("selected_options") @db.JsonB
+  shopifyUpdatedAt  DateTime? @map("shopify_updated_at")
+  deletedAt         DateTime? @map("deleted_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @default(now()) @map("updated_at")
+
+  @@unique([shopId, shopifyVariantGid])
+  @@index([productId])
+  @@index([shopId])
+  @@map("variant")
+}
+
+model Collection {
+  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId               String    @map("shop_id") @db.Uuid
+  shopifyCollectionGid String    @map("shopify_collection_gid")
+  handle               String?
+  title                String?
+  description          String?
+  shopifyUpdatedAt     DateTime? @map("shopify_updated_at")
+  deletedAt            DateTime? @map("deleted_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @default(now()) @map("updated_at")
+
+  @@unique([shopId, shopifyCollectionGid])
+  @@index([shopId])
+  @@map("collection")
+}
+
+model ProductCollection {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId       String   @map("shop_id") @db.Uuid
+  productId    String   @map("product_id") @db.Uuid
+  collectionId String   @map("collection_id") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([shopId, productId, collectionId])
+  @@index([shopId])
+  @@map("product_collection")
+}
+
+model Metafield {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId           String    @map("shop_id") @db.Uuid
+  ownerType        String    @map("owner_type")
+  ownerId          String    @map("owner_id") @db.Uuid
+  namespace        String
+  key              String
+  value            String?
+  valueType        String?   @map("value_type")
+  shopifyUpdatedAt DateTime? @map("shopify_updated_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @default(now()) @map("updated_at")
+
+  @@unique([shopId, ownerType, ownerId, namespace, key])
+  @@index([shopId])
+  @@map("metafield")
+}
+
+model IndexVersion {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId        String    @map("shop_id") @db.Uuid
+  version       Int
+  status        String    @default("building")
+  source        String    @default("full")
+  expectedCount Int?      @map("expected_count")
+  docCount      Int       @default(0) @map("doc_count")
+  error         String?
+  builtAt       DateTime? @map("built_at")
+  validatedAt   DateTime? @map("validated_at")
+  activatedAt   DateTime? @map("activated_at")
+  failedAt      DateTime? @map("failed_at")
+  supersededAt  DateTime? @map("superseded_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @default(now()) @map("updated_at")
+
+  @@unique([shopId, version])
+  @@index([shopId])
+  @@map("index_version")
+}
+
+model ProductSearchDoc {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId            String   @map("shop_id") @db.Uuid
+  indexVersionId    String   @map("index_version_id") @db.Uuid
+  productId         String   @map("product_id") @db.Uuid
+  shopifyProductGid String   @map("shopify_product_gid")
+  doc               Json     @db.JsonB
+  searchText        String   @default("") @map("search_text")
+  contentHash       String   @map("content_hash")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  @@unique([shopId, indexVersionId, productId])
+  @@index([indexVersionId])
+  @@index([shopId])
+  @@map("product_search_doc")
+}
+
+model IndexConsistencyCheck {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId         String   @map("shop_id") @db.Uuid
+  indexVersionId String   @map("index_version_id") @db.Uuid
+  shopifyCount   Int?     @map("shopify_count")
+  dbCount        Int?     @map("db_count")
+  indexedCount   Int?     @map("indexed_count")
+  failedCount    Int?     @map("failed_count")
+  status         String
+  details        Json?    @db.JsonB
+  checkedAt      DateTime @default(now()) @map("checked_at")
+
+  @@index([shopId])
+  @@index([indexVersionId])
+  @@map("index_consistency_check")
+}
+
+model SyncRun {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId         String    @map("shop_id") @db.Uuid
+  type           String
+  status         String    @default("queued")
+  shopifyBulkGid String?   @map("shopify_bulk_gid")
+  bulkStatus     String?   @map("bulk_status")
+  objectCount    Int?      @map("object_count")
+  indexVersionId String?   @map("index_version_id") @db.Uuid
+  jobId          String?   @map("job_id")
+  error          String?
+  startedAt      DateTime? @map("started_at")
+  finishedAt     DateTime? @map("finished_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @default(now()) @map("updated_at")
+
+  @@index([shopId])
+  @@index([shopId, status])
+  @@map("sync_run")
+}
+
+model SyncFailure {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId    String   @map("shop_id") @db.Uuid
+  syncRunId String?  @map("sync_run_id") @db.Uuid
+  stage     String
+  error     String
+  payload   Json?    @db.JsonB
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([shopId])
+  @@map("sync_failure")
+}
+
+model JobAudit {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId    String   @map("shop_id") @db.Uuid
+  queue     String
+  jobId     String?  @map("job_id")
+  dedupeKey String   @map("dedupe_key")
+  status    String   @default("enqueued")
+  attempt   Int      @default(0)
+  error     String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @map("updated_at")
+
+  @@unique([shopId, dedupeKey])
+  @@index([shopId])
+  @@map("job_audit")
+}

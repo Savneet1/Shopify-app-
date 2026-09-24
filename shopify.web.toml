@@ -1,0 +1,7 @@
+# Declares this repository as the app's web backend to the Shopify CLI.
+name = "web"
+roles = ["frontend", "backend"]
+
+[commands]
+predev = "npm run prisma:generate && npm run migrate:deploy"
+dev = "react-router dev"

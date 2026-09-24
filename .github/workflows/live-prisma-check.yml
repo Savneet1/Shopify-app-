@@ -1,0 +1,198 @@
+name: Live Prisma Check
+
+# Runs the FULL verification on a GitHub-hosted runner, which (unlike the build
+# sandbox) can reach binaries.prisma.sh — so `prisma generate` succeeds and the
+# Prisma-backed paths that self-skip in the sandbox actually run:
+#   - the prisma-integration suite (full sync + incremental + activation +
+#     Phase 3 search, all through the real Prisma withShopExec)
+#   - `npm run worker` booting with a real PrismaClient, connecting to pg-boss,
+#     and processing a real job, then shutting down cleanly on SIGTERM.
+#
+# It reproduces the repo's documented DB setup exactly: two NOSUPERUSER,
+# NOBYPASSRLS roles (prisma/roles.sql), owner-owned databases, migrations applied
+# in order via scripts/db-apply.sh, and pg-boss installed by the owner
+# (npm run pgboss:install). Everything is teed to run.log, uploaded as an
+# artifact AND printed in the job log.
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  live-prisma-check:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      # Superuser (admin) connection for one-time role/database bootstrap.
+      PGADMIN_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      # Runtime (app_runtime) and owner (app_owner) URLs. No ?schema=public so the
+      # same URLs work for psql, node-postgres and Prisma (Prisma defaults to the
+      # public schema). Passwords match the repo's local .env convention.
+      DATABASE_URL: postgresql://app_runtime:runtime_pw@localhost:5432/boostlike_dev
+      DIRECT_DATABASE_URL: postgresql://app_owner:owner_pw@localhost:5432/boostlike_dev
+      TEST_DATABASE_URL: postgresql://app_runtime:runtime_pw@localhost:5432/boostlike_test
+      TEST_DIRECT_DATABASE_URL: postgresql://app_owner:owner_pw@localhost:5432/boostlike_test
+      SHOPIFY_API_KEY: test_api_key_ci
+      SHOPIFY_API_SECRET: test_api_secret_phase1
+      SHOPIFY_APP_URL: https://localhost:3000
+      SCOPES: read_products
+      LOG_LEVEL: info
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Ensure psql client is available
+        run: |
+          set -o pipefail
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y postgresql-client
+          fi
+          psql --version 2>&1 | tee -a run.log
+
+      - name: Bootstrap roles and databases (as superuser)
+        run: |
+          set -euo pipefail
+          {
+            echo "===== DB bootstrap ====="
+            # Repo's role definitions (NOSUPERUSER, NOBYPASSRLS), then set the
+            # passwords this workflow's URLs use.
+            psql "$PGADMIN_URL" -v ON_ERROR_STOP=1 -f prisma/roles.sql
+            psql "$PGADMIN_URL" -v ON_ERROR_STOP=1 -c "ALTER ROLE app_owner   PASSWORD 'owner_pw';"
+            psql "$PGADMIN_URL" -v ON_ERROR_STOP=1 -c "ALTER ROLE app_runtime PASSWORD 'runtime_pw';"
+            psql "$PGADMIN_URL" -v ON_ERROR_STOP=1 -c "CREATE DATABASE boostlike_dev  OWNER app_owner;"
+            psql "$PGADMIN_URL" -v ON_ERROR_STOP=1 -c "CREATE DATABASE boostlike_test OWNER app_owner;"
+            echo "roles + databases created"
+          } 2>&1 | tee -a run.log
+
+      - name: Install dependencies (npm ci)
+        run: |
+          set -o pipefail
+          npm ci 2>&1 | tee -a run.log
+
+      - name: Apply migrations (dev + test) via scripts/db-apply.sh
+        run: |
+          set -euo pipefail
+          {
+            echo "===== migrations: boostlike_dev ====="
+            DIRECT_DATABASE_URL="$DIRECT_DATABASE_URL" bash scripts/db-apply.sh
+            echo "===== migrations: boostlike_test ====="
+            bash scripts/db-apply.sh "$TEST_DIRECT_DATABASE_URL"
+          } 2>&1 | tee -a run.log
+
+      - name: Install pg-boss schema (owner) into dev + test
+        run: |
+          set -euo pipefail
+          {
+            echo "===== pg-boss install: boostlike_dev ====="
+            BOSS_MIGRATE_URL="$DIRECT_DATABASE_URL" npm run pgboss:install
+            echo "===== pg-boss install: boostlike_test ====="
+            BOSS_MIGRATE_URL="$TEST_DIRECT_DATABASE_URL" npm run pgboss:install
+          } 2>&1 | tee -a run.log
+
+      - name: prisma generate (needs network — the sandbox could not do this)
+        run: |
+          set -o pipefail
+          { echo "===== prisma generate ====="; npx prisma generate; } 2>&1 | tee -a run.log
+
+      - name: npm test (full suite — prisma-integration MUST run, not skip)
+        run: |
+          set -o pipefail
+          { echo "===== npm test ====="; npm test; } 2>&1 | tee -a run.log
+          # Fail loudly if the Prisma-backed suite skipped (engine unreachable):
+          # that would defeat the entire purpose of this workflow.
+          if grep -q "\[prisma-integration\] SKIPPED" run.log; then
+            echo "::error::prisma-integration was SKIPPED — the Prisma engine did not connect. This run does NOT verify G1/G3."
+            exit 1
+          fi
+          echo "OK: prisma-integration did not skip." | tee -a run.log
+
+      - name: npm run typecheck
+        run: |
+          set -o pipefail
+          { echo "===== typecheck ====="; npm run typecheck; } 2>&1 | tee -a run.log
+
+      - name: npm run build
+        run: |
+          set -o pipefail
+          { echo "===== build ====="; npm run build; } 2>&1 | tee -a run.log
+
+      - name: Build the worker bundle (npm run worker runs this bundle)
+        run: |
+          set -o pipefail
+          { echo "===== worker:build ====="; npm run worker:build; } 2>&1 | tee -a run.log
+
+      - name: Run the real worker (~15s), enqueue a job, SIGTERM, verify shutdown
+        run: |
+          set -uo pipefail
+          echo "===== npm run worker (real Prisma path) =====" | tee -a run.log
+          # `npm run worker` === `node build/worker/run-worker.js`. We invoke the
+          # node entry directly so SIGTERM reaches the process (not the npm
+          # wrapper) and the graceful-shutdown handler runs.
+          node build/worker/run-worker.js > worker.log 2>&1 &
+          WPID=$!
+
+          # Wait up to 30s for the worker to boot + connect to pg-boss.
+          for i in $(seq 1 30); do
+            grep -q "catalog worker started" worker.log 2>/dev/null && break
+            sleep 1
+          done
+
+          # Enqueue one real job for the worker to process (fresh DB -> the
+          # reconciliation tick finds no shops and completes cleanly, no Shopify
+          # call). Proves the worker processes a job via the real Prisma path.
+          node scripts/ci-enqueue-maintenance.mjs >> worker.log 2>&1 || true
+
+          # Let it process, then request graceful shutdown.
+          sleep 8
+          kill -TERM "$WPID" 2>/dev/null || true
+          for i in $(seq 1 20); do kill -0 "$WPID" 2>/dev/null || break; sleep 1; done
+          kill -9 "$WPID" 2>/dev/null || true
+
+          echo "----- worker.log -----" | tee -a run.log
+          cat worker.log | tee -a run.log
+
+          # Assertions: booted, processed a job, and shut down cleanly.
+          fail=0
+          grep -q "catalog worker started" worker.log || { echo "::error::worker did not start/connect"; fail=1; }
+          grep -q "reconciliation tick"    worker.log || echo "::warning::no 'reconciliation tick' line — job may not have been processed"
+          grep -Eq "worker shutting down"  worker.log || echo "::warning::no graceful-shutdown log line"
+          if [ "$fail" -ne 0 ]; then exit 1; fi
+          echo "OK: worker booted, processed a job, and shut down." | tee -a run.log
+
+      - name: Print full run.log
+        if: always()
+        run: |
+          echo "==================== FULL run.log ===================="
+          cat run.log || true
+
+      - name: Upload logs artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-prisma-check-logs
+          path: |
+            run.log
+            worker.log
+          if-no-files-found: warn

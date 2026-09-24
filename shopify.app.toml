@@ -1,0 +1,75 @@
+# Shopify app configuration.
+# Managed via `shopify app config link` / `shopify app deploy`.
+# client_id is filled in by the CLI when you link this config to an app you
+# create in the Dev Dashboard. It is intentionally left blank in source control.
+
+name = "Search, Filter & Discovery (Boost-like)"
+handle = "search-filter-discovery"
+# client_id = "REPLACE_VIA_shopify_app_config_link"
+application_url = "https://localhost:3000"
+embedded = true
+
+[access_scopes]
+# PHASE 2: read_products is the ONLY scope added. It grants read access to
+# Product, ProductVariant, and Collection — exactly what the Phase 2 catalog
+# sync and index build require. No write scopes; no order/customer scopes.
+# (Inventory quantity may require read_inventory — REQUIRES VERIFICATION,
+# deferred to when inventory fields are actually indexed.)
+scopes = "read_products"
+
+[auth]
+# Managed installation / token exchange. No custom OAuth redirect routes are
+# required for the embedded install flow; the empty list is expected.
+redirect_urls = [
+  "https://localhost:3000/auth/callback",
+  "https://localhost:3000/auth/shopify/callback",
+  "https://localhost:3000/api/auth/callback"
+]
+
+[webhooks]
+api_version = "2026-07"
+
+# Mandatory compliance (privacy) webhooks. Required for any App Store app.
+# Verified 2026-09-19: declared via `compliance_topics` in a subscription block.
+[[webhooks.subscriptions]]
+compliance_topics = [ "customers/data_request", "customers/redact", "shop/redact" ]
+uri = "/webhooks/compliance"
+
+# App lifecycle webhooks.
+[[webhooks.subscriptions]]
+topics = [ "app/uninstalled" ]
+uri = "/webhooks/app/uninstalled"
+
+[[webhooks.subscriptions]]
+topics = [ "app/scopes_update" ]
+uri = "/webhooks/app/scopes_update"
+
+# Phase 2: catalog change webhooks -> incremental sync jobs.
+[[webhooks.subscriptions]]
+topics = [
+  "products/create", "products/update", "products/delete",
+  "collections/create", "collections/update", "collections/delete"
+]
+uri = "/webhooks/catalog"
+
+# Phase 2: bulk operation completion notification.
+[[webhooks.subscriptions]]
+topics = [ "bulk_operations/finish" ]
+uri = "/webhooks/bulk-operations-finish"
+
+# Phase 3: App Proxy for tenant-safe storefront search JSON endpoints.
+# Storefront requests to https://{shop}/{prefix}/{subpath}/{products|predictive|suggest}
+# are proxied (Shopify-signed) to {url}/{products|predictive|suggest}. The signed
+# request is verified by authenticate.public.appProxy; the shop is taken from the
+# verified signature, never a raw ?shop param. `url` must match application_url's
+# host (updated by the CLI on deploy).
+[app_proxy]
+url = "https://localhost:3000/proxy"
+subpath = "search"
+prefix = "apps"
+
+[pos]
+embedded = false
+
+[build]
+include_config_on_deploy = true

@@ -1,0 +1,55 @@
+{
+  "name": "boostlike-search-discovery",
+  "private": true,
+  "version": "0.1.0-phase1",
+  "type": "module",
+  "engines": {
+    "node": ">=20.10 <23"
+  },
+  "scripts": {
+    "build": "react-router build",
+    "dev": "shopify app dev",
+    "start": "react-router-serve ./build/server/index.js",
+    "typecheck": "react-router typegen && tsc --noEmit",
+    "prisma:generate": "prisma generate",
+    "migrate:deploy": "prisma migrate deploy",
+    "pgboss:install": "node scripts/install-pgboss.mjs",
+    "worker:build": "node scripts/build-worker.mjs",
+    "worker": "node build/worker/run-worker.js",
+    "worker:dev": "vite-node app/lib/jobs/run-worker.ts",
+    "worker:smoke": "node scripts/worker-smoke.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:isolation": "vitest run test/database-rls.test.ts test/tenant-withshop.test.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.19.0",
+    "@react-router/node": "^7.6.2",
+    "@react-router/serve": "^7.6.2",
+    "@shopify/app-bridge-react": "^4.2.13",
+    "@shopify/shopify-app-react-router": "^3.0.0",
+    "@shopify/shopify-app-session-storage-prisma": "^11.0.0",
+    "isbot": "^5.2.2",
+    "pg-boss": "^12.33.3",
+    "pino": "^9.5.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router": "^7.6.2",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@react-router/dev": "^7.6.2",
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "cross-env": "^7.0.3",
+    "dotenv": "^18.0.1",
+    "pg": "^8.23.0",
+    "prisma": "^6.19.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.0",
+    "vite-tsconfig-paths": "^5.1.4",
+    "vitest": "^2.1.8"
+  }
+}

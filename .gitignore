@@ -1,0 +1,12 @@
+node_modules
+/build
+/.cache
+/.react-router
+/public/build
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+/prisma/*.db
+/coverage
