@@ -2,6 +2,14 @@ import { unauthenticated } from "~/shopify.server";
 import { withShopExec } from "~/lib/tenant.server";
 import type { BulkFetchResult } from "~/lib/jobs/handlers";
 import { logger } from "~/lib/logger.server";
+import { FACET_METAFIELD } from "~/lib/search/config";
+
+// Phase 4: capture ONLY the configured facet namespace's metafields (read via
+// the existing read_products scope; per-metafield access controls apply —
+// REQUIRES VERIFICATION per store). Namespace is server config, never user input.
+const METAFIELD_FIELDS = `metafields(namespace: ${JSON.stringify(FACET_METAFIELD.namespace)}, first: 50) {
+    edges { node { namespace key value type } }
+  }`;
 
 /**
  * Shopify Bulk Operations + single-entity fetch (Admin GraphQL, API 2026-07).
@@ -28,7 +36,8 @@ const PRODUCT_FIELDS = `
   totalInventory tracksInventory
   onlineStoreUrl
   featuredImage { url altText }
-  options { name values }`;
+  options { name values }
+  ${METAFIELD_FIELDS}`;
 
 const VARIANT_FIELDS = `
   id sku barcode title price compareAtPrice position availableForSale updatedAt

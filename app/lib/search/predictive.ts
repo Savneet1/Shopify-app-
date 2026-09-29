@@ -55,6 +55,14 @@ export async function predictiveWithExec(
       indexVersion: null, tookMs: Date.now() - started, fallback: "native",
     };
   }
+  // As-you-type: an empty query yields nothing (predictive never browse-dumps
+  // the whole catalog — that is the products/browse endpoint's job).
+  if (q.length === 0) {
+    return {
+      products: [], suggestions: [], total: 0, strategy: "none",
+      indexVersion: active.version, tookMs: Date.now() - started,
+    };
+  }
   // Products via the shared cascade (small page). searchWithExec sets its own
   // statement_timeout; both are SET LOCAL, harmless to re-set.
   const res = await searchWithExec(exec, shopId, { q, limit, offset: 0 });

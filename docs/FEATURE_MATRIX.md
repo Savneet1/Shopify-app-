@@ -91,11 +91,34 @@ this sandbox (engine egress-blocked) — same constraint as Phase 2.1 H12 / G1 /
 G3. The `prisma-integration` suite (incl. a Phase 3 search case) RUNS on an
 engine-enabled machine and SKIPS here.
 
+## Phase 4 — Filters & Facets (Implemented; Prisma execution pg-verified)
+
+Third-party services: **none**. Scopes added: **none** (metafields via existing
+`read_products`). See `docs/PHASE4.md`.
+
+| ID | Feature | Status | Class | Shopify dep | Tests | Location |
+|---|---|---|---|---|---|---|
+| F4.1 | Facet columns materialised on `product_search_doc` (vendor, product_type, tags[], price_min/max, metafields) via shared `docInsertSql` | Implemented | FULLY | read_products | `phase4-filters` | migration 0007, `index/engine.ts`, `bulk.server.ts`, `normalize.ts`, `store.ts` |
+| F4.2 | Facet counting (own-selection-excluded; per-facet GROUP BY; price range) | Implemented | FULLY | – | `phase4-filters` | `app/lib/search/facets.ts` |
+| F4.3 | Filter application (vendor/type/tags/price/availability/metafield; OR-in-group, AND-across; validated → 400) | Implemented | FULLY | – | `phase4-filters` | `app/lib/search/filters.ts`, `query.ts` |
+| F4.4 | Collection-scoped filtering (member join; visibility preserved) | Implemented | FULLY | – | `phase4-filters` | `filters.ts` (`collectionPredicate`) |
+| F4.5 | App Proxy filter params + `{facets, appliedFilters, priceRange}`; admin filter panel | Implemented | FULLY | App Proxy | (route/loader) | `routes/proxy.products.tsx`, `routes/app.search.tsx`, `search/params.ts` |
+| F4.6 | One metafield facet (single-value exact-match) — extension point | Implemented | PARTIALLY (by design) | read_products | `phase4-filters` | `config.ts` `FACET_METAFIELD` |
+| F4.7 | Tests: facet correctness, AND-combine, collection scope, visibility-under-filters, hardening, cross-shop, active-version | Implemented | FULLY | – | 18 `phase4-filters` + prisma-integration case | `test/phase4-*.test.ts` |
+
+Requires Verification (Phase 4): metafield read access per store under
+`read_products`; bulk namespace-filtered metafields selection on a live store;
+full metafield-type coverage (out of scope); collection hierarchy (none native —
+Phase-8 candidate). Storefront/theme result replacement remains **Phase 7**.
+
+Prisma-execution note: the filter/facet code runs through the production Prisma
+`withShopExec`; that execution is pg-verified (identical SQL via node-postgres)
+and confirmed live on GitHub Actions (see the Phase 4 report).
+
 ## Later phases (Planned — preserved, not implemented)
 
 | ID | Area | Status | Phase | Notes / class |
 |---|---|---|---|---|
-| F4 | Filters, filter trees, metafields, counts, collection filtering | Planned | 4 | Theme-dependent result replacement = **Requires Verification** (Phase 7). |
 | F5 | Typo tolerance, synonyms, stop words, redirects, ranking, benchmarks | Planned | 5 | Damerau-Levenshtein, rule-based. |
 | F6 | Semantic layer / natural-language parser | Planned | 6 | Rule-based only (no AI/embeddings/pgvector). |
 | F7 | Theme App Extension, mobile, URL state, a11y, Dawn + 2 themes, vintage investigation | Planned | 7 | Progressive enhancement; native search must survive app outage. |

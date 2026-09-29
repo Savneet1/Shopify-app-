@@ -1,6 +1,7 @@
 import { authenticate } from "~/shopify.server";
 import { resolveShopId } from "~/lib/tenant.server";
 import { storefrontLimiter } from "./rate-limit";
+import { FilterValidationError } from "./filters";
 import { logger } from "~/lib/logger.server";
 
 /**
@@ -83,6 +84,10 @@ export async function handleProxy(
     const data = await handler({ shop, shopId, url });
     return jsonResponse(data);
   } catch (err) {
+    // Malformed filter input -> clean 400 (client error), never a 500.
+    if (err instanceof FilterValidationError) {
+      return jsonResponse({ error: "invalid_filters", message: err.message }, { status: 400 });
+    }
     // Never leak a bare 500 to the storefront: advise native fallback (200).
     logger.error(
       { err: err instanceof Error ? err.message : String(err) },

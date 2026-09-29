@@ -64,6 +64,11 @@ function docInsertSql(whereFrag: string): string {
         (p.online_store_url IS NOT NULL) AS published,
         COALESCE(v.any_available, false) AS available,
         v.variant_sku_text AS sku_text,
+        -- Phase 4 facet columns (same source rows as search — no drift).
+        p.vendor AS vendor, p.product_type AS product_type,
+        ARRAY(SELECT jsonb_array_elements_text(p.tags)) AS tags_arr,
+        v.price_min AS price_min, v.price_max AS price_max,
+        COALESCE(p.metafields, '{}'::jsonb) AS metafields,
         ${tsv} AS tsv,
         jsonb_build_object(
           'title', p.title, 'description', p.description, 'vendor', p.vendor,
@@ -113,14 +118,18 @@ function docInsertSql(whereFrag: string): string {
     )
     INSERT INTO product_search_doc
       (shop_id, index_version_id, product_id, shopify_product_gid, doc, search_text,
-       content_hash, tsv, title, sku_text, status, published, available)
+       content_hash, tsv, title, sku_text, status, published, available,
+       vendor, product_type, tags, price_min, price_max, metafields)
     SELECT shop_id, $2::uuid, product_id, shopify_product_gid, doc, COALESCE(search_text,''),
-       md5(doc::text), tsv, title, sku_text, status, published, available
+       md5(doc::text), tsv, title, sku_text, status, published, available,
+       vendor, product_type, COALESCE(tags_arr, '{}'), price_min, price_max, metafields
     FROM built
     ON CONFLICT (shop_id, index_version_id, product_id) DO UPDATE
       SET doc=EXCLUDED.doc, search_text=EXCLUDED.search_text, content_hash=EXCLUDED.content_hash,
           tsv=EXCLUDED.tsv, title=EXCLUDED.title, sku_text=EXCLUDED.sku_text,
-          status=EXCLUDED.status, published=EXCLUDED.published, available=EXCLUDED.available`;
+          status=EXCLUDED.status, published=EXCLUDED.published, available=EXCLUDED.available,
+          vendor=EXCLUDED.vendor, product_type=EXCLUDED.product_type, tags=EXCLUDED.tags,
+          price_min=EXCLUDED.price_min, price_max=EXCLUDED.price_max, metafields=EXCLUDED.metafields`;
 }
 
 export async function createIndexVersion(

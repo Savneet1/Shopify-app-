@@ -16,6 +16,27 @@
  */
 export const TS_CONFIG = "english";
 
+/**
+ * Phase 4 — the ONE proof-of-concept metafield facet + the extension point.
+ * A single-value, exact-match facet over a configured (namespace, key). Only
+ * this namespace is captured from the catalog and only this key is faceted;
+ * full metafield-type coverage (list/boolean/number/date/money/…) is out of
+ * Phase 4 scope (see docs/PHASE4.md). Configurable via env so a merchant/dev can
+ * point it at their own metafield without code changes.
+ *
+ * Which metafields are actually returned by the Admin API depends on each
+ * metafield's access controls under the existing read_products scope
+ * (REQUIRES VERIFICATION per store) — no new scope is requested.
+ */
+export const FACET_METAFIELD = {
+  namespace: process.env.FACET_METAFIELD_NAMESPACE || "custom",
+  key: process.env.FACET_METAFIELD_KEY || "material",
+  label: process.env.FACET_METAFIELD_LABEL || "Material",
+} as const;
+
+/** Flat map key used in product.metafields / product_search_doc.metafields. */
+export const FACET_METAFIELD_MAPKEY = `${FACET_METAFIELD.namespace}.${FACET_METAFIELD.key}`;
+
 /** Wrap a text SQL expression as accent-folded to_tsvector in the shared config. */
 export function tsvExpr(sqlTextExpr: string): string {
   return `to_tsvector('${TS_CONFIG}', immutable_unaccent(coalesce(${sqlTextExpr}, '')))`;

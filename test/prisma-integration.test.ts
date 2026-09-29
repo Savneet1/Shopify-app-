@@ -8,6 +8,7 @@ import {
 } from "~/lib/index/engine";
 import { upsertProduct, upsertVariant } from "~/lib/catalog/store";
 import { searchProducts } from "~/lib/search/query";
+import { storefrontSearch } from "~/lib/search/storefront";
 import { claimWebhook, markWebhookProcessed } from "~/lib/webhooks/receipt.server";
 import { sha256Hex } from "~/lib/webhooks/hmac.server";
 
@@ -116,6 +117,44 @@ describe("Prisma-backed integration (production withShopExec path)", () => {
 
     const bySku = await searchProducts(shopId, { q: "CRIM-1" });
     expect(bySku.products[0]?.title).toBe("Crimson Trail Runner");
+  });
+
+  it("Phase 4 filtered search + facets via the production Prisma path", async (ctx) => {
+    if (!prismaOk) return ctx.skip();
+    const shopId = await resolveShopId("shop-a.myshopify.com");
+
+    // Two published, ACTIVE products with different vendors + a facet metafield.
+    await withShopExec(shopId, async (e) => {
+      for (const [n, vendor, material] of [
+        ["200", "Acme", "Leather"],
+        ["201", "Globex", "Canvas"],
+      ] as const) {
+        const { id } = await upsertProduct(e, shopId, {
+          shopifyProductGid: `gid://shopify/Product/${n}`,
+          title: `Bag ${n}`, vendor, productType: "Bag", status: "ACTIVE",
+          onlineStoreUrl: `https://shop.test/bag-${n}`, tags: ["carry"],
+          metafields: { "custom.material": material },
+        });
+        await upsertVariant(e, shopId, id, {
+          shopifyVariantGid: `gid://shopify/ProductVariant/${n}1`,
+          sku: `BAG-${n}`, price: "40.00", availableForSale: true, position: 1,
+        });
+      }
+    });
+    const v = await withShopExec(shopId, (e) => createIndexVersion(e, shopId, "full", 2));
+    await withShopExec(shopId, (e) => buildDocs(e, shopId, v.id));
+    await withShopExec(shopId, (e) => validateIndexVersion(e, shopId, v.id, 2));
+    await withShopExec(shopId, (e) => activateIndexVersion(e, shopId, v.id));
+
+    // storefrontSearch uses the production withShopExec (Prisma) internally.
+    const r = await storefrontSearch(shopId, { q: "", filters: { vendor: ["Acme"] } });
+    expect(r.fallback).toBeNull();
+    expect(r.total).toBe(1);
+    expect(r.products[0]?.vendor).toBe("Acme");
+    // vendor facet excludes its own selection -> both vendors still counted.
+    const vendorFacet = r.facets.find((f) => f.key === "vendor");
+    expect(vendorFacet?.options.find((o) => o.value === "Acme")?.count).toBe(1);
+    expect(vendorFacet?.options.find((o) => o.value === "Globex")?.count).toBe(1);
   });
 
   it("claimWebhook + markWebhookProcessed via Prisma (idempotency)", async (ctx) => {

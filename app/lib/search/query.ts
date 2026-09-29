@@ -1,29 +1,34 @@
 import type { Exec } from "~/lib/db/executor";
 import { withShopExec } from "~/lib/tenant.server";
-import { TS_CONFIG } from "./config";
 import { getActiveVersion } from "~/lib/index/engine";
+import {
+  Params,
+  type SearchFilters,
+  type RawFilters,
+  normalizeFilters,
+  visibilityPredicate,
+  collectionPredicate,
+  filterPredicates,
+  skuHitPredicate,
+  ftsPredicate,
+  rankExpr,
+  queryTokens,
+  prefixLexemes,
+  orLexemes,
+  type Strategy,
+} from "./filters";
 
 /**
- * Storefront full-text search over the ACTIVE index version (Phase 3).
+ * Storefront full-text search over the ACTIVE index version, now with Phase 4
+ * filtering. Guarantees are unchanged from Phase 3 (ACTIVE-version-only,
+ * published+ACTIVE visibility, parameterised/sanitised tsqueries, bounded
+ * length/limit/offset, per-statement timeout, cascade AND→prefix→OR→trigram with
+ * exact SKU/barcode first, ts_rank_cd baseline). Filters and the shared
+ * visibility predicate come from ./filters so search and facets never diverge.
  *
- * Guarantees / boundaries:
- *  - Reads ONLY the shop's ACTIVE index version, and ONLY documents that are
- *    published to the Online Store (online_store_url IS NOT NULL -> published)
- *    AND status = 'ACTIVE'. Draft / archived / unpublished products can never be
- *    returned.
- *  - All tsqueries are built with parameterised, sanitised input
- *    (websearch_to_tsquery / to_tsquery over immutable_unaccent'd text). User
- *    text is never concatenated into SQL; prefix/OR lexeme strings are assembled
- *    from [\p{L}\p{N}] tokens only, so the tsquery operators (& | :*) are the
- *    only special characters that reach to_tsquery.
- *  - Query length is capped, limit is clamped to <= 50, offset is bounded, and a
- *    per-statement statement_timeout is set (SET LOCAL) so a pathological query
- *    cannot run unbounded.
- *  - ts_rank_cd is the baseline relevance. Exact SKU/barcode matches always rank
- *    first (whole-token match on the concatenated sku_text).
- *  - pg_trgm is used ONLY as the last-resort zero-result fallback (word-similar
- *    title), NOT as typo tolerance — that (Damerau-Levenshtein, synonyms, stop
- *    words, redirects, ranking tuning) is Phase 5 and is deliberately absent.
+ * When `q` is empty but filters/collection are present, the engine runs in
+ * "browse" mode: no text predicate, just the filter set — the collection-page /
+ * filter-only case.
  */
 
 export const MAX_QUERY_LEN = 200;
@@ -32,18 +37,14 @@ export const DEFAULT_LIMIT = 24;
 export const MAX_OFFSET = 1000;
 const STATEMENT_TIMEOUT_MS = Number(process.env.SEARCH_STATEMENT_TIMEOUT_MS || 3000);
 
-export type SearchStrategy =
-  | "exact_sku"
-  | "and"
-  | "prefix"
-  | "or"
-  | "trigram"
-  | "none";
+export type SearchStrategy = Strategy;
+export { queryTokens };
 
 export interface SearchParams {
   q: string;
   limit?: number;
   offset?: number;
+  filters?: RawFilters;
 }
 
 export interface SearchProduct {
@@ -71,12 +72,7 @@ export interface SearchResponse {
   fallback?: "native";
 }
 
-/** Clamp/normalise raw request params to safe bounds. */
-export function normalizeParams(p: SearchParams): {
-  q: string;
-  limit: number;
-  offset: number;
-} {
+export function normalizeParams(p: SearchParams): { q: string; limit: number; offset: number } {
   const q = String(p.q ?? "").slice(0, MAX_QUERY_LEN).trim();
   let limit = Number.isFinite(p.limit) ? Math.floor(Number(p.limit)) : DEFAULT_LIMIT;
   if (!Number.isFinite(limit) || limit <= 0) limit = DEFAULT_LIMIT;
@@ -85,26 +81,6 @@ export function normalizeParams(p: SearchParams): {
   if (!Number.isFinite(offset) || offset < 0) offset = 0;
   offset = Math.min(offset, MAX_OFFSET);
   return { q, limit, offset };
-}
-
-/** Extract [\p{L}\p{N}] tokens (lower-cased). Everything else is dropped so the
- * only special characters that can reach to_tsquery are the ones we add. */
-export function queryTokens(q: string): string[] {
-  const m = q.toLowerCase().match(/[\p{L}\p{N}]+/gu);
-  return m ? m.filter((t) => t.length > 0).slice(0, 16) : [];
-}
-
-/** AND-lexeme string with the last token as a prefix: "foo & bar:*". */
-function prefixLexemes(tokens: string[]): string | null {
-  if (tokens.length === 0) return null;
-  const parts = tokens.map((t, i) => (i === tokens.length - 1 ? `${t}:*` : t));
-  return parts.join(" & ");
-}
-
-/** OR-lexeme string: "foo | bar". */
-function orLexemes(tokens: string[]): string | null {
-  if (tokens.length === 0) return null;
-  return tokens.join(" | ");
 }
 
 function mapDocToProduct(row: { product_id: string; gid: string; doc: any }): SearchProduct {
@@ -127,16 +103,68 @@ function mapDocToProduct(row: { product_id: string; gid: string; doc: any }): Se
   };
 }
 
-// Common visibility filter: active version + published to Online Store + ACTIVE
-// status. This is the hard guarantee that unpublished/draft/archived products
-// are never returned.
-const VISIBLE = `shop_id = $1::uuid AND index_version_id = $2::uuid
-  AND published = true AND status = 'ACTIVE'`;
+export type Stage = Exclude<Strategy, "browse" | "exact_sku" | "none">;
 
-// Whole-token exact SKU/barcode probe (case-insensitive) over sku_text.
-const SKU_HIT = `(' ' || lower(coalesce(sku_text, '')) || ' ') LIKE ('% ' || lower($3) || ' %')`;
+/** Ordered broadening stages available for the token set. */
+function stagesFor(tokens: string[]): Stage[] {
+  const s: Stage[] = ["and"];
+  if (prefixLexemes(tokens)) s.push("prefix");
+  if (orLexemes(tokens)) s.push("or");
+  s.push("trigram");
+  return s;
+}
 
-interface StrategyRow {
+function lexFor(stage: Stage, tokens: string[]): string | null {
+  return stage === "prefix" ? prefixLexemes(tokens) : stage === "or" ? orLexemes(tokens) : null;
+}
+
+/**
+ * Build the full WHERE (visibility + collection + filters + optional text match)
+ * into `pb`. When `stage` is null (browse mode) there is no text predicate.
+ * `exclude` drops one facet group (used by facet counting).
+ */
+export function buildWhere(
+  pb: Params,
+  shopId: string,
+  versionId: string,
+  filters: SearchFilters,
+  stage: Stage | null,
+  q: string,
+  lex: string | null,
+  exclude?: Parameters<typeof filterPredicates>[2],
+): string {
+  const parts = [visibilityPredicate(pb, shopId, versionId)];
+  const col = collectionPredicate(pb, shopId, filters.collectionId);
+  if (col) parts.push(col);
+  for (const p of filterPredicates(pb, filters, exclude)) parts.push(p);
+  if (stage) parts.push(`((${ftsPredicate(pb, stage, q, lex)}) OR (${skuHitPredicate(pb, q)}))`);
+  return parts.join(" AND ");
+}
+
+export type Matcher = { kind: "browse" } | { kind: "stage"; stage: Stage; lex: string | null };
+
+/** Probe stages in order; the first that yields any row (under all filters) wins.
+ * q-empty → browse. Nothing matched → null. Exposed so facets reuse the winner. */
+export async function resolveMatcher(
+  exec: Exec,
+  shopId: string,
+  versionId: string,
+  q: string,
+  tokens: string[],
+  filters: SearchFilters,
+): Promise<Matcher | null> {
+  if (q.length === 0) return { kind: "browse" };
+  for (const stage of stagesFor(tokens)) {
+    const lex = lexFor(stage, tokens);
+    const pb = new Params();
+    const where = buildWhere(pb, shopId, versionId, filters, stage, q, lex);
+    const rows = await exec.rows(`SELECT 1 FROM product_search_doc WHERE ${where} LIMIT 1`, pb.values);
+    if (rows.length) return { kind: "stage", stage, lex };
+  }
+  return null;
+}
+
+interface ProductRow {
   product_id: string;
   gid: string;
   doc: any;
@@ -145,33 +173,31 @@ interface StrategyRow {
   sku_total: number;
 }
 
-/**
- * Run ONE strategy. `matchExpr` is the FTS/trigram predicate (uses $3 = raw q,
- * $4 = lexeme string where applicable). Params are fixed:
- *   $1 shopId, $2 versionId, $3 q, $4 lexemes|null, $5 limit, $6 offset.
- */
-async function runStrategy(
+/** Run the product page for a resolved matcher + filters. */
+export async function runProducts(
   exec: Exec,
   shopId: string,
   versionId: string,
+  matcher: Matcher,
   q: string,
-  lexemes: string | null,
+  filters: SearchFilters,
   limit: number,
   offset: number,
-  matchExpr: string,
-  rankExpr: string,
-): Promise<{ rows: StrategyRow[] }> {
-  // $4 (lexemes) is not referenced by the AND/trigram stages; pin its type with
-  // an always-true guard and never pass NULL, so Postgres can infer it in every
-  // stage. Empty string is used when a stage has no lexeme input.
+): Promise<{ rows: ProductRow[] }> {
+  const pb = new Params();
+  const stage = matcher.kind === "stage" ? matcher.stage : null;
+  const lex = matcher.kind === "stage" ? matcher.lex : null;
+  const where = buildWhere(pb, shopId, versionId, filters, stage, q, lex);
+  const skuSel = stage ? skuHitPredicate(pb, q) : "false";
+  const rankSel = stage ? rankExpr(pb, stage, q, lex) : "0";
+  const ftsSel = stage ? ftsPredicate(pb, stage, q, lex) : "true";
+  const limP = pb.add(limit);
+  const offP = pb.add(offset);
   const sql = `
     WITH base AS (
       SELECT product_id, shopify_product_gid AS gid, doc, title,
-             (${matchExpr}) AS fts_hit,
-             (${SKU_HIT})  AS sku_hit,
-             (${rankExpr}) AS rank
-      FROM product_search_doc
-      WHERE ${VISIBLE} AND $4::text = $4::text AND ((${matchExpr}) OR (${SKU_HIT}))
+             (${skuSel}) AS sku_hit, (${rankSel}) AS rank, (${ftsSel}) AS fts_hit
+      FROM product_search_doc WHERE ${where}
     )
     SELECT b.product_id, b.gid, b.doc,
            (SELECT count(*)::int FROM base) AS total,
@@ -179,18 +205,14 @@ async function runStrategy(
            (SELECT count(*)::int FROM base WHERE sku_hit) AS sku_total
     FROM base b
     ORDER BY b.sku_hit DESC, b.rank DESC NULLS LAST, b.title ASC
-    LIMIT $5::int OFFSET $6::int`;
-  const rows = await exec.rows<StrategyRow>(sql, [shopId, versionId, q, lexemes ?? "", limit, offset]);
+    LIMIT ${limP}::int OFFSET ${offP}::int`;
+  const rows = await exec.rows<ProductRow>(sql, pb.values);
   return { rows };
 }
 
-const WEBSEARCH = `websearch_to_tsquery('${TS_CONFIG}', immutable_unaccent($3))`;
-const TOQUERY_LEX = `to_tsquery('${TS_CONFIG}', immutable_unaccent($4))`;
-
 /**
- * Execute the strategy cascade against the ACTIVE version, inside an existing
- * tenant Exec (transaction). Sets a per-statement timeout. Returns a full
- * SearchResponse. Throws only on an unexpected DB error (caller maps to fallback).
+ * Full search over an existing tenant Exec. Contains the no-active-index guard;
+ * validation errors from filters propagate to the caller (mapped to 400).
  */
 export async function searchWithExec(
   exec: Exec,
@@ -199,105 +221,47 @@ export async function searchWithExec(
 ): Promise<SearchResponse> {
   const started = Date.now();
   const { q, limit, offset } = normalizeParams(params);
+  const filters = normalizeFilters(params.filters);
 
-  // Bound every statement in this tx. Integer is validated, not user input.
   const timeout = Math.max(100, Math.min(STATEMENT_TIMEOUT_MS, 10000));
   await exec.run(`SET LOCAL statement_timeout = ${timeout}`);
 
   const active = await getActiveVersion(exec, shopId);
   if (!active) {
-    // No index yet -> caller should fall back to native search.
-    return {
-      products: [],
-      total: 0,
-      strategy: "none",
-      indexVersion: null,
-      tookMs: Date.now() - started,
-      fallback: "native",
-    };
+    return { products: [], total: 0, strategy: "none", indexVersion: null, tookMs: Date.now() - started, fallback: "native" };
   }
 
   const empty = (strategy: SearchStrategy): SearchResponse => ({
-    products: [],
-    total: 0,
+    products: [], total: 0, strategy, indexVersion: active.version, tookMs: Date.now() - started,
+  });
+
+  // q empty -> browse mode (all visible, optionally filtered).
+  const tokens = queryTokens(q);
+  const matcher = await resolveMatcher(exec, shopId, active.id, q, tokens, filters);
+  if (!matcher) return empty("none"); // q present, nothing matched at any stage
+
+  const { rows } = await runProducts(exec, shopId, active.id, matcher, q, filters, limit, offset);
+  const total = rows[0]?.total ?? 0;
+  const ftsTotal = rows[0]?.fts_total ?? 0;
+  const skuTotal = rows[0]?.sku_total ?? 0;
+  let strategy: SearchStrategy =
+    matcher.kind === "browse" ? "browse" : matcher.stage;
+  if (matcher.kind === "stage" && ftsTotal === 0 && skuTotal > 0) strategy = "exact_sku";
+
+  return {
+    products: rows.map(mapDocToProduct),
+    total,
     strategy,
     indexVersion: active.version,
     tookMs: Date.now() - started,
-  });
-
-  if (q.length === 0) return empty("none");
-
-  const tokens = queryTokens(q);
-  const prefix = prefixLexemes(tokens);
-  const or = orLexemes(tokens);
-
-  // Cascade: AND (websearch) -> prefix -> OR -> trigram. Exact SKU/barcode is
-  // OR-ed into every stage and always sorts first, so an exact code match is
-  // never lost and always leads.
-  const RANK_FTS = (matchQ: string) => `ts_rank_cd(tsv, ${matchQ})`;
-  const stages: Array<{ label: SearchStrategy; match: string; rank: string; lex: string | null }> = [
-    { label: "and", match: `tsv @@ ${WEBSEARCH}`, rank: RANK_FTS(WEBSEARCH), lex: null },
-  ];
-  if (prefix) {
-    stages.push({ label: "prefix", match: `tsv @@ ${TOQUERY_LEX}`, rank: RANK_FTS(TOQUERY_LEX), lex: prefix });
-  }
-  if (or) {
-    stages.push({ label: "or", match: `tsv @@ ${TOQUERY_LEX}`, rank: RANK_FTS(TOQUERY_LEX), lex: or });
-  }
-  // Trigram last-resort (word similarity of the title). NOT typo tolerance.
-  stages.push({
-    label: "trigram",
-    match: `immutable_unaccent(lower(coalesce(title,''))) %> immutable_unaccent(lower($3))`,
-    rank: `word_similarity(immutable_unaccent(lower($3)), immutable_unaccent(lower(coalesce(title,''))))`,
-    lex: null,
-  });
-
-  for (const stage of stages) {
-    const { rows } = await runStrategy(
-      exec, shopId, active.id, q, stage.lex, limit, offset, stage.match, stage.rank,
-    );
-    const total = rows[0]?.total ?? 0;
-    if (total > 0) {
-      const ftsTotal = rows[0]?.fts_total ?? 0;
-      const skuTotal = rows[0]?.sku_total ?? 0;
-      // Honest strategy label: if only the exact-SKU probe matched (FTS stage
-      // found nothing), report exact_sku.
-      const strategy: SearchStrategy = ftsTotal === 0 && skuTotal > 0 ? "exact_sku" : stage.label;
-      return {
-        products: rows.map(mapDocToProduct),
-        total,
-        strategy,
-        indexVersion: active.version,
-        tookMs: Date.now() - started,
-      };
-    }
-  }
-
-  // Nothing matched at any stage — a genuine zero-result (handled structurally
-  // by the fallback layer; NOT a native fallback, the index is healthy).
-  return empty("none");
+  };
 }
 
-/**
- * Public entry: resolve tenant context, run the cascade, and translate any
- * unexpected error (timeout / DB error) into a native fallback response so the
- * storefront never receives a bare 500.
- */
-export async function searchProducts(
-  shopId: string,
-  params: SearchParams,
-): Promise<SearchResponse> {
+export async function searchProducts(shopId: string, params: SearchParams): Promise<SearchResponse> {
   const started = Date.now();
   try {
     return await withShopExec(shopId, (exec) => searchWithExec(exec, shopId, params));
   } catch {
-    return {
-      products: [],
-      total: 0,
-      strategy: "none",
-      indexVersion: null,
-      tookMs: Date.now() - started,
-      fallback: "native",
-    };
+    return { products: [], total: 0, strategy: "none", indexVersion: null, tookMs: Date.now() - started, fallback: "native" };
   }
 }

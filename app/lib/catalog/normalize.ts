@@ -1,5 +1,6 @@
 import type { CollectionInput } from "./store";
 import type { NormalizedProduct } from "./bulk-parse";
+import { FACET_METAFIELD } from "~/lib/search/config";
 
 /**
  * Canonical normalisation of a Shopify GraphQL Product/Collection NODE into our
@@ -29,6 +30,25 @@ function toTags(tags: any): string[] {
   if (Array.isArray(tags)) return tags.map((t) => String(t));
   if (typeof tags === "string") return tags.split(",").map((s) => s.trim()).filter(Boolean);
   return [];
+}
+
+/**
+ * Flatten the captured metafields (configured namespace only) into a
+ * { "namespace.key": "value" } map. Only scalar string values are kept — the
+ * Phase 4 facet is single-value exact-match; richer metafield types
+ * (list/number/date/money/boolean) are out of scope (docs/PHASE4.md).
+ */
+function toMetafields(node: any): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const m of connectionNodes(node.metafields)) {
+    if (!m || m.namespace == null || m.key == null || m.value == null) continue;
+    if (m.namespace !== FACET_METAFIELD.namespace) continue;
+    const v = String(m.value);
+    // Keep only simple scalar values (skip JSON-array/object list types).
+    if (v.startsWith("[") || v.startsWith("{")) continue;
+    out[`${m.namespace}.${m.key}`] = v;
+  }
+  return out;
 }
 
 export function normalizeProductNode(node: any): NormalizedProduct {
@@ -71,6 +91,8 @@ export function normalizeProductNode(node: any): NormalizedProduct {
       // onlineStoreUrl is null when NOT published to the Online Store channel;
       // storefront search uses it as the publication signal.
       onlineStoreUrl: node.onlineStoreUrl ?? null,
+      // Phase 4: configured-namespace metafields for the facet.
+      metafields: toMetafields(node),
       shopifyUpdatedAt: node.updatedAt ?? null,
     },
     variants,
