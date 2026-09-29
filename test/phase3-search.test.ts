@@ -95,7 +95,7 @@ describe("Phase 3 — storefront search", () => {
     it("exact SKU ranks first even amid other matches", async () => {
       const r = await db.withShopExec(shop, (e) => searchWithExec(e, shop, { q: "SAN-3" }));
       expect(r.products[0].title).toBe("Red Sandals");
-      expect(r.strategy === "exact_sku" || r.strategy === "and").toBe(true);
+      expect(r.strategy === "exact_sku" || r.strategy === "exact").toBe(true);
     });
 
     it("returns result-card fields", async () => {
@@ -196,22 +196,23 @@ describe("Phase 3 — storefront search", () => {
       await buildActive(db, shop);
     });
 
-    it("AND strategy for a full phrase", async () => {
+    it("exact strategy for a full phrase (Phase 5 class)", async () => {
       const r = await db.withShopExec(shop, (e) => searchWithExec(e, shop, { q: "wireless headphones" }));
-      expect(r.strategy).toBe("and");
+      expect(r.strategy).toBe("exact");
       expect(r.total).toBe(1);
     });
 
     it("prefix strategy for a partial trailing token", async () => {
       const r = await db.withShopExec(shop, (e) => searchWithExec(e, shop, { q: "headph" }));
-      expect(["prefix", "and"]).toContain(r.strategy);
+      expect(["prefix", "exact"]).toContain(r.strategy);
       expect(r.total).toBe(1);
     });
 
-    it("trigram is the last resort for a near-miss title", async () => {
-      // "headphon" missing letters -> not a prefix of a lexeme; trigram catches it.
+    it("fuzzy correction catches a near-miss title (Phase 5)", async () => {
+      // "hedphones" is a 1-edit typo of "headphones" -> fuzzy class.
       const r = await db.withShopExec(shop, (e) => searchWithExec(e, shop, { q: "hedphones" }));
-      expect(["trigram", "or", "prefix"]).toContain(r.strategy);
+      expect(["fuzzy", "prefix", "partial"]).toContain(r.strategy);
+      expect(r.total).toBe(1);
     });
 
     it("genuine zero-result returns a structured block with suggestions", async () => {

@@ -127,6 +127,19 @@ export default function SearchPlayground() {
                     {result.zeroResult ? " · zero-result" : ""}
                   </p>
 
+                  {result.redirect && (
+                    <p style={{ background: "#e5f0ff", padding: "0.75rem", borderRadius: 6 }}>
+                      ↪ Redirect rule hit → <code>{result.redirect}</code> (storefront would send the shopper here)
+                    </p>
+                  )}
+
+                  {result.corrected && result.correctedQuery && (
+                    <p style={{ background: "#eefaf0", padding: "0.6rem", borderRadius: 6 }}>
+                      Showing results for <strong>{result.correctedQuery}</strong>{" "}
+                      <span style={{ color: "#888" }}>(searched for “{result.query}”)</span>
+                    </p>
+                  )}
+
                   {result.fallback === "native" && (
                     <p style={{ background: "#fff4e5", padding: "0.75rem", borderRadius: 6 }}>
                       The app could not serve results (no active index / timeout / error). The
@@ -150,6 +163,11 @@ export default function SearchPlayground() {
                               {p.priceMin != null ? ` · ${p.priceMin}${p.priceMax && p.priceMax !== p.priceMin ? `–${p.priceMax}` : ""}` : ""}
                               {p.available ? "" : " · out of stock"}
                             </div>
+                          </div>
+                          {/* Ranking explanation: why this product ranked here. */}
+                          <div style={{ textAlign: "right", fontSize: 12, color: "#888", minWidth: 90 }}>
+                            <div>match: <code>{p.matchClass ?? "—"}</code></div>
+                            <div>score: {p.score != null ? p.score.toFixed(1) : "—"}</div>
                           </div>
                         </li>
                       ))}

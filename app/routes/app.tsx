@@ -31,6 +31,9 @@ export default function App() {
         </a>
         <a href="/app/sync">Catalog sync</a>
         <a href="/app/search">Search playground</a>
+        <a href="/app/synonyms">Synonyms</a>
+        <a href="/app/stopwords">Stop words</a>
+        <a href="/app/redirects">Redirects</a>
       </NavMenu>
       <Outlet />
     </AppProvider>

@@ -1,5 +1,6 @@
 import type { Exec } from "~/lib/db/executor";
 import { weightedTsvSql } from "~/lib/search/config";
+import { rebuildVocabulary } from "~/lib/search/vocabulary";
 
 /**
  * Versioned search index engine.
@@ -169,6 +170,8 @@ export async function buildDocs(
     [shopId, indexVersionId],
   );
   const docCount = counted[0].n;
+  // Phase 5: build the version's vocabulary from the docs just written.
+  await rebuildVocabulary(exec, shopId, indexVersionId);
   await exec.run(
     `UPDATE index_version SET doc_count=$3::int, status='validating', built_at=now(), updated_at=now()
      WHERE shop_id=$1::uuid AND id=$2::uuid`,
@@ -310,6 +313,9 @@ export async function activateIndexVersion(
       [shopId, indexVersionId],
     );
   }
+  // Phase 5: rebuild the target version's vocabulary AFTER catch-up so it matches
+  // exactly the docs being activated (no lost updates across the swap).
+  await rebuildVocabulary(exec, shopId, indexVersionId);
 
   await exec.run(
     `UPDATE index_version SET status='superseded', superseded_at=now(), updated_at=now()
@@ -381,12 +387,14 @@ export async function refreshDocInActiveVersion(
       `DELETE FROM product_search_doc WHERE shop_id=$1::uuid AND index_version_id=$2::uuid AND product_id=$3::uuid`,
       [shopId, active.id, productId],
     );
+    await rebuildVocabulary(exec, shopId, active.id);
     return "removed";
   }
   await exec.run(
     docInsertSql(`p.shop_id=$1::uuid AND p.id=$3::uuid AND p.deleted_at IS NULL`),
     [shopId, active.id, productId],
   );
+  await rebuildVocabulary(exec, shopId, active.id);
   return "upserted";
 }
 
@@ -413,6 +421,7 @@ export async function refreshDocsForProducts(
        AND p.id = d.product_id AND p.id = ANY($3::uuid[]) AND p.deleted_at IS NOT NULL`,
     [shopId, active.id, productIds],
   );
+  await rebuildVocabulary(exec, shopId, active.id);
   return productIds.length;
 }
 
@@ -443,6 +452,7 @@ export async function reindexVersionDocs(
     `SELECT count(*)::int AS n FROM product_search_doc WHERE shop_id=$1::uuid AND index_version_id=$2::uuid`,
     [shopId, indexVersionId],
   );
+  await rebuildVocabulary(exec, shopId, indexVersionId);
   return counted[0].n;
 }
 

@@ -9,6 +9,7 @@ import {
 import { upsertProduct, upsertVariant } from "~/lib/catalog/store";
 import { searchProducts } from "~/lib/search/query";
 import { storefrontSearch } from "~/lib/search/storefront";
+import { addSynonym } from "~/lib/search/synonyms";
 import { claimWebhook, markWebhookProcessed } from "~/lib/webhooks/receipt.server";
 import { sha256Hex } from "~/lib/webhooks/hmac.server";
 
@@ -155,6 +156,35 @@ describe("Prisma-backed integration (production withShopExec path)", () => {
     const vendorFacet = r.facets.find((f) => f.key === "vendor");
     expect(vendorFacet?.options.find((o) => o.value === "Acme")?.count).toBe(1);
     expect(vendorFacet?.options.find((o) => o.value === "Globex")?.count).toBe(1);
+  });
+
+  it("Phase 5 typo correction + synonym via the production Prisma path", async (ctx) => {
+    if (!prismaOk) return ctx.skip();
+    const shopId = await resolveShopId("shop-a.myshopify.com");
+
+    await withShopExec(shopId, async (e) => {
+      for (const [n, title] of [["300", "Wireless Headphones"], ["301", "Leather Couch"]] as const) {
+        const { id } = await upsertProduct(e, shopId, {
+          shopifyProductGid: `gid://shopify/Product/${n}`, title, status: "ACTIVE",
+          onlineStoreUrl: `https://shop.test/${n}`,
+        });
+        await upsertVariant(e, shopId, id, { shopifyVariantGid: `gid://shopify/ProductVariant/${n}1`, sku: `P-${n}`, price: "20.00", availableForSale: true });
+      }
+    });
+    const v = await withShopExec(shopId, (e) => createIndexVersion(e, shopId, "full", 2));
+    await withShopExec(shopId, (e) => buildDocs(e, shopId, v.id));
+    await withShopExec(shopId, (e) => validateIndexVersion(e, shopId, v.id, 2));
+    await withShopExec(shopId, (e) => activateIndexVersion(e, shopId, v.id));
+    await withShopExec(shopId, (e) => addSynonym(e, shopId, { kind: "two_way", terms: ["sofa", "couch"] }));
+
+    // Typo correction (fuzzy) through real Prisma.
+    const typo = await storefrontSearch(shopId, { q: "hedphones" });
+    expect(typo.total).toBe(1);
+    expect(typo.corrections[0]?.to).toBe("headphones");
+
+    // Synonym expansion through real Prisma.
+    const syn = await storefrontSearch(shopId, { q: "sofa" });
+    expect(syn.products.map((p) => p.title)).toContain("Leather Couch");
   });
 
   it("claimWebhook + markWebhookProcessed via Prisma (idempotency)", async (ctx) => {

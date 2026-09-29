@@ -6,29 +6,25 @@ import {
   type SearchFilters,
   type RawFilters,
   normalizeFilters,
-  visibilityPredicate,
-  collectionPredicate,
-  filterPredicates,
-  skuHitPredicate,
-  ftsPredicate,
-  rankExpr,
-  queryTokens,
-  prefixLexemes,
-  orLexemes,
-  type Strategy,
 } from "./filters";
+import { buildWhere, skuHitPredicate, type PlannedMatch, type PlanLevel } from "./match";
+import { buildPlan, andLex, prefixLex, orLex, fuzzyLex, type QueryPlan } from "./rewrite";
+import {
+  CLASS_WEIGHT,
+  FIELD_SCALE,
+  IN_STOCK_BOOST,
+  fieldScoreSql,
+  toTsQuery,
+  type MatchClass,
+} from "./ranking";
 
 /**
- * Storefront full-text search over the ACTIVE index version, now with Phase 4
- * filtering. Guarantees are unchanged from Phase 3 (ACTIVE-version-only,
- * published+ACTIVE visibility, parameterised/sanitised tsqueries, bounded
- * length/limit/offset, per-statement timeout, cascade AND→prefix→OR→trigram with
- * exact SKU/barcode first, ts_rank_cd baseline). Filters and the shared
- * visibility predicate come from ./filters so search and facets never diverge.
- *
- * When `q` is empty but filters/collection are present, the engine runs in
- * "browse" mode: no text predicate, just the filter set — the collection-page /
- * filter-only case.
+ * Storefront search over the ACTIVE index version. Phase 5 adds a query planner
+ * (stop words → typo correction → synonym expansion) and rule-based ranking on
+ * top of the Phase 3/4 engine. The plan drives both products and facets (via
+ * match.ts) so facet counts never drift. Guarantees unchanged: ACTIVE-version
+ * only, published+ACTIVE visibility, parameterised/sanitised tsqueries, bounded
+ * length/limit/offset, per-statement timeout.
  */
 
 export const MAX_QUERY_LEN = 200;
@@ -37,14 +33,19 @@ export const DEFAULT_LIMIT = 24;
 export const MAX_OFFSET = 1000;
 const STATEMENT_TIMEOUT_MS = Number(process.env.SEARCH_STATEMENT_TIMEOUT_MS || 3000);
 
-export type SearchStrategy = Strategy;
-export { queryTokens };
+export type SearchStrategy =
+  | "browse" | "exact_sku" | "exact" | "prefix" | "synonym" | "fuzzy" | "partial" | "none";
 
 export interface SearchParams {
   q: string;
   limit?: number;
   offset?: number;
   filters?: RawFilters;
+}
+
+export interface Correction {
+  from: string;
+  to: string;
 }
 
 export interface SearchProduct {
@@ -61,6 +62,8 @@ export interface SearchProduct {
   compareAtMin: string | null;
   compareAtMax: string | null;
   available: boolean;
+  matchClass?: MatchClass;
+  score?: number;
 }
 
 export interface SearchResponse {
@@ -70,6 +73,8 @@ export interface SearchResponse {
   indexVersion: number | null;
   tookMs: number;
   fallback?: "native";
+  corrected: boolean;
+  corrections: Correction[];
 }
 
 export function normalizeParams(p: SearchParams): { q: string; limit: number; offset: number } {
@@ -83,7 +88,9 @@ export function normalizeParams(p: SearchParams): { q: string; limit: number; of
   return { q, limit, offset };
 }
 
-function mapDocToProduct(row: { product_id: string; gid: string; doc: any }): SearchProduct {
+function mapDocToProduct(row: {
+  product_id: string; gid: string; doc: any; cls?: MatchClass; score?: number;
+}): SearchProduct {
   const d = row.doc ?? {};
   const img = d.image ?? {};
   return {
@@ -100,66 +107,27 @@ function mapDocToProduct(row: { product_id: string; gid: string; doc: any }): Se
     compareAtMin: d.compareAtMin != null ? String(d.compareAtMin) : null,
     compareAtMax: d.compareAtMax != null ? String(d.compareAtMax) : null,
     available: Boolean(d.available),
+    matchClass: row.cls,
+    score: row.score != null ? Number(row.score) : undefined,
   };
 }
 
-export type Stage = Exclude<Strategy, "browse" | "exact_sku" | "none">;
-
-/** Ordered broadening stages available for the token set. */
-function stagesFor(tokens: string[]): Stage[] {
-  const s: Stage[] = ["and"];
-  if (prefixLexemes(tokens)) s.push("prefix");
-  if (orLexemes(tokens)) s.push("or");
-  s.push("trigram");
-  return s;
-}
-
-function lexFor(stage: Stage, tokens: string[]): string | null {
-  return stage === "prefix" ? prefixLexemes(tokens) : stage === "or" ? orLexemes(tokens) : null;
-}
-
-/**
- * Build the full WHERE (visibility + collection + filters + optional text match)
- * into `pb`. When `stage` is null (browse mode) there is no text predicate.
- * `exclude` drops one facet group (used by facet counting).
- */
-export function buildWhere(
-  pb: Params,
-  shopId: string,
-  versionId: string,
-  filters: SearchFilters,
-  stage: Stage | null,
-  q: string,
-  lex: string | null,
-  exclude?: Parameters<typeof filterPredicates>[2],
-): string {
-  const parts = [visibilityPredicate(pb, shopId, versionId)];
-  const col = collectionPredicate(pb, shopId, filters.collectionId);
-  if (col) parts.push(col);
-  for (const p of filterPredicates(pb, filters, exclude)) parts.push(p);
-  if (stage) parts.push(`((${ftsPredicate(pb, stage, q, lex)}) OR (${skuHitPredicate(pb, q)}))`);
-  return parts.join(" AND ");
-}
-
-export type Matcher = { kind: "browse" } | { kind: "stage"; stage: Stage; lex: string | null };
-
-/** Probe stages in order; the first that yields any row (under all filters) wins.
- * q-empty → browse. Nothing matched → null. Exposed so facets reuse the winner. */
-export async function resolveMatcher(
+/** Resolve the plan level: browse (empty), else the narrowest level that yields
+ * a result under the filters (primary → partial), else null (nothing matched). */
+export async function resolvePlanned(
   exec: Exec,
   shopId: string,
   versionId: string,
-  q: string,
-  tokens: string[],
+  plan: QueryPlan,
   filters: SearchFilters,
-): Promise<Matcher | null> {
-  if (q.length === 0) return { kind: "browse" };
-  for (const stage of stagesFor(tokens)) {
-    const lex = lexFor(stage, tokens);
+): Promise<PlannedMatch | null> {
+  if (plan.isEmpty) return { plan, level: "browse" };
+  for (const level of ["primary", "partial"] as PlanLevel[]) {
+    const m: PlannedMatch = { plan, level };
     const pb = new Params();
-    const where = buildWhere(pb, shopId, versionId, filters, stage, q, lex);
+    const where = buildWhere(pb, shopId, versionId, filters, m);
     const rows = await exec.rows(`SELECT 1 FROM product_search_doc WHERE ${where} LIMIT 1`, pb.values);
-    if (rows.length) return { kind: "stage", stage, lex };
+    if (rows.length) return m;
   }
   return null;
 }
@@ -168,52 +136,92 @@ interface ProductRow {
   product_id: string;
   gid: string;
   doc: any;
+  cls: MatchClass;
+  score: number;
   total: number;
-  fts_total: number;
-  sku_total: number;
 }
 
-/** Run the product page for a resolved matcher + filters. */
+/** All lexemes involved (tokens + fuzzy candidates + synonym tokens), for the
+ * field-score tsquery so ranking reflects any matched weighted lexeme. */
+function rankLex(plan: QueryPlan): string {
+  const set = new Set<string>(plan.keptTokens);
+  for (const p of plan.positions) for (const c of p.candidates) set.add(c);
+  for (const e of plan.synonymExpansions) for (const t of e) set.add(t);
+  return orLex([...set]);
+}
+
+/** Run the ranked product page for a resolved plan + filters. */
 export async function runProducts(
   exec: Exec,
   shopId: string,
   versionId: string,
-  matcher: Matcher,
-  q: string,
+  m: PlannedMatch,
   filters: SearchFilters,
   limit: number,
   offset: number,
 ): Promise<{ rows: ProductRow[] }> {
   const pb = new Params();
-  const stage = matcher.kind === "stage" ? matcher.stage : null;
-  const lex = matcher.kind === "stage" ? matcher.lex : null;
-  const where = buildWhere(pb, shopId, versionId, filters, stage, q, lex);
-  const skuSel = stage ? skuHitPredicate(pb, q) : "false";
-  const rankSel = stage ? rankExpr(pb, stage, q, lex) : "0";
-  const ftsSel = stage ? ftsPredicate(pb, stage, q, lex) : "true";
+  const where = buildWhere(pb, shopId, versionId, filters, m);
+  const plan = m.plan;
+  const hasTokens = plan.keptTokens.length > 0 && m.level !== "browse";
+
+  // Per-row match-class flags + rule-based score.
+  let clsExpr = `'browse'::text`;
+  let scoreExpr = `0::float8`;
+  if (hasTokens) {
+    const sku = skuHitPredicate(pb, plan.raw);
+    const exactQ = `tsv @@ ${toTsQuery(pb.add(andLex(plan.keptTokens)))}`;
+    const prefixQ = `tsv @@ ${toTsQuery(pb.add(prefixLex(plan.keptTokens)))}`;
+    const synParts = plan.synonymExpansions.map((e) => `tsv @@ ${toTsQuery(pb.add(andLex(e)))}`);
+    const synQ = synParts.length ? `(${synParts.join(" OR ")})` : `false`;
+    const fl = fuzzyLex(plan.positions);
+    const fuzzyQ = fl ? `tsv @@ ${toTsQuery(pb.add(fl))}` : `false`;
+    const rankQ = toTsQuery(pb.add(rankLex(plan)));
+    clsExpr = `CASE
+      WHEN ${sku} THEN 'sku'
+      WHEN ${exactQ} THEN 'exact'
+      WHEN ${prefixQ} THEN 'prefix'
+      WHEN ${synQ} THEN 'synonym'
+      WHEN ${fuzzyQ} THEN 'fuzzy'
+      ELSE 'partial' END`;
+    const classWeight = `CASE
+      WHEN ${sku} THEN ${CLASS_WEIGHT.sku}
+      WHEN ${exactQ} THEN ${CLASS_WEIGHT.exact}
+      WHEN ${prefixQ} THEN ${CLASS_WEIGHT.prefix}
+      WHEN ${synQ} THEN ${CLASS_WEIGHT.synonym}
+      WHEN ${fuzzyQ} THEN ${CLASS_WEIGHT.fuzzy}
+      ELSE ${CLASS_WEIGHT.partial} END`;
+    scoreExpr = `(${classWeight}) + (${fieldScoreSql(rankQ)} * ${FIELD_SCALE})
+      + (CASE WHEN available THEN ${IN_STOCK_BOOST} ELSE 0 END)`;
+  }
+
   const limP = pb.add(limit);
   const offP = pb.add(offset);
   const sql = `
     WITH base AS (
-      SELECT product_id, shopify_product_gid AS gid, doc, title,
-             (${skuSel}) AS sku_hit, (${rankSel}) AS rank, (${ftsSel}) AS fts_hit
+      SELECT product_id, shopify_product_gid AS gid, doc, title, available, product_id AS pid,
+             (${clsExpr}) AS cls,
+             (${scoreExpr}) AS score
       FROM product_search_doc WHERE ${where}
     )
-    SELECT b.product_id, b.gid, b.doc,
-           (SELECT count(*)::int FROM base) AS total,
-           (SELECT count(*)::int FROM base WHERE fts_hit) AS fts_total,
-           (SELECT count(*)::int FROM base WHERE sku_hit) AS sku_total
+    SELECT b.product_id, b.gid, b.doc, b.cls, b.score,
+           (SELECT count(*)::int FROM base) AS total
     FROM base b
-    ORDER BY b.sku_hit DESC, b.rank DESC NULLS LAST, b.title ASC
+    ORDER BY b.score DESC, b.title ASC, b.pid ASC
     LIMIT ${limP}::int OFFSET ${offP}::int`;
   const rows = await exec.rows<ProductRow>(sql, pb.values);
   return { rows };
 }
 
-/**
- * Full search over an existing tenant Exec. Contains the no-active-index guard;
- * validation errors from filters propagate to the caller (mapped to 400).
- */
+/** Map a resolved plan/level + top row to the response strategy label. */
+export function strategyOf(m: PlannedMatch | null, topClass: MatchClass | undefined, total: number): SearchStrategy {
+  if (!m) return "none";
+  if (m.level === "browse") return "browse";
+  if (total === 0) return "none";
+  if (topClass === "sku") return "exact_sku";
+  return (topClass ?? (m.level === "partial" ? "partial" : "exact")) as SearchStrategy;
+}
+
 export async function searchWithExec(
   exec: Exec,
   shopId: string,
@@ -227,26 +235,30 @@ export async function searchWithExec(
   await exec.run(`SET LOCAL statement_timeout = ${timeout}`);
 
   const active = await getActiveVersion(exec, shopId);
+  const emptyBase = {
+    products: [] as SearchProduct[], total: 0, tookMs: 0,
+    corrected: false, corrections: [] as Correction[],
+  };
   if (!active) {
-    return { products: [], total: 0, strategy: "none", indexVersion: null, tookMs: Date.now() - started, fallback: "native" };
+    return { ...emptyBase, strategy: "none", indexVersion: null, tookMs: Date.now() - started, fallback: "native" };
   }
 
-  const empty = (strategy: SearchStrategy): SearchResponse => ({
-    products: [], total: 0, strategy, indexVersion: active.version, tookMs: Date.now() - started,
-  });
+  const plan = await buildPlan(exec, shopId, active.id, q);
+  const planned = await resolvePlanned(exec, shopId, active.id, plan, filters);
+  const corrections = plan.corrections;
 
-  // q empty -> browse mode (all visible, optionally filtered).
-  const tokens = queryTokens(q);
-  const matcher = await resolveMatcher(exec, shopId, active.id, q, tokens, filters);
-  if (!matcher) return empty("none"); // q present, nothing matched at any stage
+  if (!planned) {
+    return { ...emptyBase, strategy: "none", indexVersion: active.version, tookMs: Date.now() - started, corrections, corrected: false };
+  }
 
-  const { rows } = await runProducts(exec, shopId, active.id, matcher, q, filters, limit, offset);
+  const { rows } = await runProducts(exec, shopId, active.id, planned, filters, limit, offset);
   const total = rows[0]?.total ?? 0;
-  const ftsTotal = rows[0]?.fts_total ?? 0;
-  const skuTotal = rows[0]?.sku_total ?? 0;
-  let strategy: SearchStrategy =
-    matcher.kind === "browse" ? "browse" : matcher.stage;
-  if (matcher.kind === "stage" && ftsTotal === 0 && skuTotal > 0) strategy = "exact_sku";
+  const topClass = rows[0]?.cls;
+  const strategy = strategyOf(planned, topClass, total);
+  // A correction is "applied" only when the corrected terms actually drove
+  // matches (fuzzy class present or nothing exact) — but we surface the
+  // suggestion whenever the planner produced one and results exist.
+  const corrected = corrections.length > 0 && total > 0;
 
   return {
     products: rows.map(mapDocToProduct),
@@ -254,6 +266,8 @@ export async function searchWithExec(
     strategy,
     indexVersion: active.version,
     tookMs: Date.now() - started,
+    corrected,
+    corrections,
   };
 }
 
@@ -262,6 +276,9 @@ export async function searchProducts(shopId: string, params: SearchParams): Prom
   try {
     return await withShopExec(shopId, (exec) => searchWithExec(exec, shopId, params));
   } catch {
-    return { products: [], total: 0, strategy: "none", indexVersion: null, tookMs: Date.now() - started, fallback: "native" };
+    return {
+      products: [], total: 0, strategy: "none", indexVersion: null,
+      tookMs: Date.now() - started, fallback: "native", corrected: false, corrections: [],
+    };
   }
 }

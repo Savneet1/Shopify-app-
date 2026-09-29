@@ -115,11 +115,28 @@ Prisma-execution note: the filter/facet code runs through the production Prisma
 `withShopExec`; that execution is pg-verified (identical SQL via node-postgres)
 and confirmed live on GitHub Actions (see the Phase 4 report).
 
+## Phase 5 — Search Relevance (Implemented; Prisma execution pg-verified)
+
+Third-party services: **none**. Scopes added: **none**. Extensions added:
+**none** (pg_trgm reused; Damerau-Levenshtein in TypeScript). See `docs/PHASE5.md`.
+
+| ID | Feature | Status | Class | Tests | Location |
+|---|---|---|---|---|---|
+| F5.1 | Typo tolerance (Damerau-Levenshtein + pg_trgm candidates; per-version vocabulary; length thresholds; numeric/SKU exclusion; correction indicator) | Implemented | FULLY | `phase5-units`, `phase5-relevance` | `damerau.ts`, `text.ts`, `vocabulary.ts`, `rewrite.ts`, migration 0008 |
+| F5.2 | Synonyms (per-shop, one/two-way, multi-word, query-time, caps) | Implemented | FULLY | `phase5-*` | `synonyms.ts`, `app/routes/app.synonyms.tsx` |
+| F5.3 | Stop words (default + per-shop overrides; all-stop fallback; applied to search/predictive/facets) | Implemented | FULLY | `phase5-*` | `stopwords.ts`, `app/routes/app.stopwords.tsx` |
+| F5.4 | Redirects (normalized exact match; open-redirect protection; payload not 30x) | Implemented | FULLY | `phase5-*` | `redirects.ts`, `app/routes/app.redirects.tsx` |
+| F5.5 | Rule-based ranking (match class > field weights > in-stock > tie-break; deterministic; explanation) | Implemented | FULLY | `phase5-relevance` | `ranking.ts`, `query.ts`, `match.ts` |
+| F5.6 | Admin CRUD UI + playground (corrections/redirects/ranking explanation) | Implemented | FULLY | (loaders) | `app/routes/app.{synonyms,stopwords,redirects,search}.tsx` |
+
+New tenant tables (RLS enabled+forced, app_runtime grants): `search_vocabulary`,
+`search_synonym`, `search_stopword`, `search_redirect` (migration 0008).
+Benchmarks/performance remain **Phase 14** (no numbers claimed).
+
 ## Later phases (Planned — preserved, not implemented)
 
 | ID | Area | Status | Phase | Notes / class |
 |---|---|---|---|---|
-| F5 | Typo tolerance, synonyms, stop words, redirects, ranking, benchmarks | Planned | 5 | Damerau-Levenshtein, rule-based. |
 | F6 | Semantic layer / natural-language parser | Planned | 6 | Rule-based only (no AI/embeddings/pgvector). |
 | F7 | Theme App Extension, mobile, URL state, a11y, Dawn + 2 themes, vintage investigation | Planned | 7 | Progressive enhancement; native search must survive app outage. |
 | F8 | Merchandising (pin/boost/demote/hide/banners/schedule) + A/B testing | Planned | 8 | FULLY. |

@@ -1,33 +1,19 @@
 import type { Exec } from "~/lib/db/executor";
-import { Params, type SearchFilters, type FacetGroup } from "./filters";
-import { buildWhere, type Matcher, type Stage } from "./query";
+import { Params, type SearchFilters } from "./filters";
+import { buildWhere, type PlannedMatch } from "./match";
 import { FACET_METAFIELD, FACET_METAFIELD_MAPKEY } from "./config";
 
 /**
- * Phase 4.2 facet counting.
- *
- * The "own selection doesn't zero itself" rule: a facet's option counts reflect
- * every OTHER active filter but NOT the facet's own selection. So selecting
- * "Vendor = Nike" must not make every other vendor's count disappear — the
- * vendor facet is counted with the vendor filter EXCLUDED (buildWhere(..,
- * exclude:"vendor")), while all other filters (and the text match, collection
- * scope, and visibility) still apply. Each facet is a separate GROUP BY count
- * query; every value is a bound parameter (no string-concatenated SQL).
- *
- * Counts are computed over the SAME matched + filtered + visible set as the
- * product results (same `matcher`, same `buildWhere`), so facets never drift.
+ * Phase 4.2 facet counting, Phase 5-aware. Each facet is a separate GROUP BY
+ * count with the facet's OWN filter group EXCLUDED (so an option never zeroes
+ * its own facet), while the shared text match (the SAME PlannedMatch used by the
+ * product query — including fuzzy correction, synonym expansion and stop-word
+ * removal), collection scope and visibility all still apply. Counts therefore
+ * always match the result set. Every value is a bound parameter.
  */
 
-export interface FacetOption {
-  value: string;
-  label: string;
-  count: number;
-}
-export interface Facet {
-  key: string;
-  label: string;
-  options: FacetOption[];
-}
+export interface FacetOption { value: string; label: string; count: number; }
+export interface Facet { key: string; label: string; options: FacetOption[]; }
 export interface FacetsResult {
   facets: Facet[];
   priceRange: { min: string; max: string } | null;
@@ -35,25 +21,12 @@ export interface FacetsResult {
 
 const FACET_OPTION_LIMIT = 50;
 
-function stageOf(m: Matcher): { stage: Stage | null; lex: string | null } {
-  if (m.kind === "browse") return { stage: null, lex: null };
-  return { stage: m.stage, lex: m.lex };
-}
-
-/** Single-column GROUP BY facet (vendor / product_type). */
 async function columnFacet(
-  exec: Exec,
-  shopId: string,
-  versionId: string,
-  q: string,
-  filters: SearchFilters,
-  matcher: Matcher,
-  group: FacetGroup,
-  column: string,
+  exec: Exec, shopId: string, versionId: string, filters: SearchFilters, m: PlannedMatch,
+  group: Parameters<typeof buildWhere>[5], column: string,
 ): Promise<FacetOption[]> {
   const pb = new Params();
-  const { stage, lex } = stageOf(matcher);
-  const where = buildWhere(pb, shopId, versionId, filters, stage, q, lex, group);
+  const where = buildWhere(pb, shopId, versionId, filters, m, group);
   const sql = `
     SELECT ${column} AS value, count(*)::int AS count
     FROM product_search_doc
@@ -65,18 +38,11 @@ async function columnFacet(
   return rows.map((r) => ({ value: r.value, label: r.value, count: r.count }));
 }
 
-/** Multi-value tags facet: unnest the tags array within the filtered set. */
 async function tagsFacet(
-  exec: Exec,
-  shopId: string,
-  versionId: string,
-  q: string,
-  filters: SearchFilters,
-  matcher: Matcher,
+  exec: Exec, shopId: string, versionId: string, filters: SearchFilters, m: PlannedMatch,
 ): Promise<FacetOption[]> {
   const pb = new Params();
-  const { stage, lex } = stageOf(matcher);
-  const where = buildWhere(pb, shopId, versionId, filters, stage, q, lex, "tags");
+  const where = buildWhere(pb, shopId, versionId, filters, m, "tags");
   const sql = `
     SELECT t AS value, count(*)::int AS count
     FROM product_search_doc psd, unnest(psd.tags) AS t
@@ -88,48 +54,25 @@ async function tagsFacet(
   return rows.map((r) => ({ value: r.value, label: r.value, count: r.count }));
 }
 
-/** Availability facet: in-stock vs out-of-stock counts. */
 async function availabilityFacet(
-  exec: Exec,
-  shopId: string,
-  versionId: string,
-  q: string,
-  filters: SearchFilters,
-  matcher: Matcher,
+  exec: Exec, shopId: string, versionId: string, filters: SearchFilters, m: PlannedMatch,
 ): Promise<FacetOption[]> {
   const pb = new Params();
-  const { stage, lex } = stageOf(matcher);
-  const where = buildWhere(pb, shopId, versionId, filters, stage, q, lex, "available");
-  const sql = `
-    SELECT available AS value, count(*)::int AS count
-    FROM product_search_doc
-    WHERE ${where}
-    GROUP BY available`;
-  const rows = await exec.rows<{ value: boolean; count: number }>(sql, pb.values);
-  const opts: FacetOption[] = [];
-  for (const r of rows) {
-    opts.push({
-      value: r.value ? "true" : "false",
-      label: r.value ? "In stock" : "Out of stock",
-      count: r.count,
-    });
-  }
-  // Stable order: In stock first.
-  return opts.sort((a, b) => (a.value === b.value ? 0 : a.value === "true" ? -1 : 1));
+  const where = buildWhere(pb, shopId, versionId, filters, m, "available");
+  const rows = await exec.rows<{ value: boolean; count: number }>(
+    `SELECT available AS value, count(*)::int AS count FROM product_search_doc WHERE ${where} GROUP BY available`,
+    pb.values,
+  );
+  return rows
+    .map((r) => ({ value: r.value ? "true" : "false", label: r.value ? "In stock" : "Out of stock", count: r.count }))
+    .sort((a, b) => (a.value === b.value ? 0 : a.value === "true" ? -1 : 1));
 }
 
-/** The one proof-of-concept metafield facet (single-value, exact-match). */
 async function metafieldFacet(
-  exec: Exec,
-  shopId: string,
-  versionId: string,
-  q: string,
-  filters: SearchFilters,
-  matcher: Matcher,
+  exec: Exec, shopId: string, versionId: string, filters: SearchFilters, m: PlannedMatch,
 ): Promise<FacetOption[]> {
   const pb = new Params();
-  const { stage, lex } = stageOf(matcher);
-  const where = buildWhere(pb, shopId, versionId, filters, stage, q, lex, "metafield");
+  const where = buildWhere(pb, shopId, versionId, filters, m, "metafield");
   const keyP = pb.add(FACET_METAFIELD_MAPKEY);
   const sql = `
     SELECT metafields->>${keyP} AS value, count(*)::int AS count
@@ -142,44 +85,30 @@ async function metafieldFacet(
   return rows.map((r) => ({ value: r.value, label: r.value, count: r.count }));
 }
 
-/** Price range (min/max) over the set filtered by everything EXCEPT price. */
 async function priceRange(
-  exec: Exec,
-  shopId: string,
-  versionId: string,
-  q: string,
-  filters: SearchFilters,
-  matcher: Matcher,
+  exec: Exec, shopId: string, versionId: string, filters: SearchFilters, m: PlannedMatch,
 ): Promise<{ min: string; max: string } | null> {
   const pb = new Params();
-  const { stage, lex } = stageOf(matcher);
-  const where = buildWhere(pb, shopId, versionId, filters, stage, q, lex, "price");
-  const sql = `
-    SELECT min(price_min) AS min, max(price_max) AS max
-    FROM product_search_doc WHERE ${where}`;
-  const rows = await exec.rows<{ min: string | null; max: string | null }>(sql, pb.values);
+  const where = buildWhere(pb, shopId, versionId, filters, m, "price");
+  const rows = await exec.rows<{ min: string | null; max: string | null }>(
+    `SELECT min(price_min) AS min, max(price_max) AS max FROM product_search_doc WHERE ${where}`,
+    pb.values,
+  );
   const r = rows[0];
   if (!r || r.min == null || r.max == null) return null;
   return { min: String(r.min), max: String(r.max) };
 }
 
-/** Compute all facets + price range for a resolved matcher + filters. */
 export async function computeFacetsWithExec(
-  exec: Exec,
-  shopId: string,
-  versionId: string,
-  q: string,
-  filters: SearchFilters,
-  matcher: Matcher,
+  exec: Exec, shopId: string, versionId: string, filters: SearchFilters, m: PlannedMatch,
 ): Promise<FacetsResult> {
-  // Sequential: one tenant Exec == one DB client/transaction, which cannot run
-  // concurrent queries (node-postgres). Each facet is a small indexed count.
-  const vendor = await columnFacet(exec, shopId, versionId, q, filters, matcher, "vendor", "vendor");
-  const productType = await columnFacet(exec, shopId, versionId, q, filters, matcher, "productType", "product_type");
-  const tags = await tagsFacet(exec, shopId, versionId, q, filters, matcher);
-  const availability = await availabilityFacet(exec, shopId, versionId, q, filters, matcher);
-  const metafield = await metafieldFacet(exec, shopId, versionId, q, filters, matcher);
-  const range = await priceRange(exec, shopId, versionId, q, filters, matcher);
+  // Sequential (one tenant Exec == one client; no concurrent queries).
+  const vendor = await columnFacet(exec, shopId, versionId, filters, m, "vendor", "vendor");
+  const productType = await columnFacet(exec, shopId, versionId, filters, m, "productType", "product_type");
+  const tags = await tagsFacet(exec, shopId, versionId, filters, m);
+  const availability = await availabilityFacet(exec, shopId, versionId, filters, m);
+  const metafield = await metafieldFacet(exec, shopId, versionId, filters, m);
+  const range = await priceRange(exec, shopId, versionId, filters, m);
 
   const facets: Facet[] = [
     { key: "vendor", label: "Vendor", options: vendor },
