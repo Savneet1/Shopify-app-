@@ -47,8 +47,21 @@ export interface InterpretedAs {
   interpreted: InterpretedItem[];
   remaining: string;
   negations: string[];
+  /** A3: phrases the shopper negated that were NOT applied (negative filtering
+   * is unsupported). Mirrors `negations`; named for UI consumption. */
+  negationIgnored: string[];
+  /** A3: human-readable note when something was negated but ignored, else null. */
+  warning: string | null;
   sort: SortOption | null;
   fellBack: boolean;
+}
+
+/** Build the human-readable negation warning (A3), or null when nothing was
+ * negated. Deterministic and UI-ready. */
+function negationWarning(negations: string[]): string | null {
+  if (negations.length === 0) return null;
+  const list = negations.map((n) => `"${n}"`).join(", ");
+  return `Negative filtering isn't supported yet, so ${list} ${negations.length === 1 ? "was" : "were"} ignored.`;
 }
 
 export interface StorefrontSearchResponse {
@@ -154,7 +167,7 @@ export async function storefrontSearchWithExec(
   const timeout = Math.max(100, Math.min(STATEMENT_TIMEOUT_MS, 10000));
   await exec.run(`SET LOCAL statement_timeout = ${timeout}`);
 
-  const baseInterpreted: InterpretedAs = { enabled: nlEnabled, applied: false, interpreted: [], remaining: q, negations: [], sort: null, fellBack: false };
+  const baseInterpreted: InterpretedAs = { enabled: nlEnabled, applied: false, interpreted: [], remaining: q, negations: [], negationIgnored: [], warning: null, sort: null, fellBack: false };
   const base = {
     query: q, products: [] as SearchProduct[], total: 0, sort: explicitSort ?? ("relevance" as SortOption),
     indexVersion: null as number | null, tookMs: 0, fallback: null as "native" | null, zeroResult: false,
@@ -188,7 +201,8 @@ export async function storefrontSearchWithExec(
       effectiveSort = explicitSort ?? parsed.sort ?? "relevance";
       interpretedAs = {
         enabled: true, applied: true, interpreted: parsed.interpreted, remaining: parsed.remaining,
-        negations: parsed.negations, sort: parsed.sort ?? null, fellBack: false,
+        negations: parsed.negations, negationIgnored: parsed.negations,
+        warning: negationWarning(parsed.negations), sort: parsed.sort ?? null, fellBack: false,
       };
     }
   }
@@ -252,7 +266,7 @@ export async function storefrontSearch(
       sort: "relevance", indexVersion: null, tookMs: Date.now() - started, fallback: "native", zeroResult: false,
       suggestions: [], facets: [], appliedFilters: filtersForEcho, priceRange: null, corrected: false,
       corrections: [], correctedQuery: null, redirect: null,
-      interpretedAs: { enabled: params.nl !== false, applied: false, interpreted: [], remaining: "", negations: [], sort: null, fellBack: false },
+      interpretedAs: { enabled: params.nl !== false, applied: false, interpreted: [], remaining: "", negations: [], negationIgnored: [], warning: null, sort: null, fellBack: false },
     };
   }
 }

@@ -4,10 +4,22 @@
  * every path agrees on what a "term" is.
  */
 
+/**
+ * Strip C0 control characters (U+0000–U+001F, including NUL) and U+007F (DEL)
+ * from a string. Applied in the shared normalization path so a NUL byte can
+ * never reach PostgreSQL (which rejects it: "invalid byte sequence 0x00").
+ * Tabs/newlines become ordinary whitespace handled by the callers.
+ */
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/g;
+export function stripControl(s: string): string {
+  return s.replace(CONTROL_CHARS, " ");
+}
+
 /** Normalise a query for redirect matching: lower-case, fold punctuation to
  * spaces, collapse whitespace. (case, whitespace, punctuation). */
 export function normalizeQuery(q: string): string {
-  return q
+  return stripControl(q)
     .toLowerCase()
     .normalize("NFKC")
     .replace(/[^\p{L}\p{N}\s]+/gu, " ")

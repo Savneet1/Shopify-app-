@@ -2,6 +2,7 @@ import type { Exec } from "~/lib/db/executor";
 import { getActiveVersion } from "~/lib/index/engine";
 import { tokenize } from "./text";
 import { getEffectiveAttributes, type AttrMapping } from "./attributes";
+import { FACET_METAFIELD_MAPKEY } from "./config";
 import type { RawFilters } from "./filters";
 import type { SortOption } from "./query";
 
@@ -37,6 +38,23 @@ export interface ParseContext {
   attributes: Map<string, AttrMapping>;
   vendors: string[];
   productTypes: string[];
+  /** Live, visible tag values keyed by lower-case → original live casing (A2). */
+  tagValues: Map<string, string>;
+  /** Live, visible configured-metafield values, lower-case → live casing (A2). */
+  metafieldValues: Map<string, string>;
+}
+
+/** Build a case-insensitive lookup (lower-case → live casing). Deterministic:
+ * when two live values collide case-insensitively, the lexicographically first
+ * original casing wins. */
+function ciMap(values: string[]): Map<string, string> {
+  const sorted = [...values].sort((a, b) => a.localeCompare(b));
+  const m = new Map<string, string>();
+  for (const v of sorted) {
+    const k = v.toLowerCase();
+    if (!m.has(k)) m.set(k, v);
+  }
+  return m;
 }
 
 export interface ParseOptions {
@@ -46,12 +64,79 @@ export interface ParseOptions {
 const NEGATIONS = new Set(["not", "no", "without", "except", "excluding", "sans"]);
 const MAX_PARSE_LEN = 200;
 
-// Number with optional leading currency symbol and optional trailing currency word.
-const NUM = String.raw`(?:[$£€₹]\s*)?(\d{1,7}(?:\.\d{1,2})?)(?:\s*(?:dollars?|usd|rs\.?|inr|rupees?|pounds?|gbp|euros?|eur))?`;
+// --- Price parsing (Phase 6.1 A1) ---------------------------------------------
+// A money amount: optional currency symbol, an integer (plain or with thousands
+// commas), an optional decimal, and an optional trailing currency word. The
+// amount is validated (≤9 integer digits, ≤2 decimals) AFTER matching so an
+// over-long number is rejected whole rather than partially consumed.
+const CURWORD = String.raw`(?:dollars?|usd|rs\.?|inr|rupees?|pounds?|gbp|euros?|eur)`;
+const AMT = String.raw`((?:[$£€₹]\s?)?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:\s?${CURWORD})?)`;
 
-function toNum(s: string): number | null {
-  const n = Number(s);
-  return Number.isFinite(n) && n >= 0 && n <= 1_000_000_000 ? n : null;
+// Unit/count words that mean a number is NOT a price.
+const UNIT_WORDS = new Set([
+  "ml", "l", "oz", "kg", "g", "lb", "mm", "cm", "m", "inch", "in", "gb", "tb",
+  "pack", "pcs", "piece", "pieces", "color", "colors", "star", "stars",
+  "year", "years", "yr",
+]);
+// A unit attached with no space ("100ml", "18s", "5kg").
+const NOSPACE_UNIT = /^(?:ml|l|oz|kg|g|lb|mm|cm|m|inch|in|gb|tb|yr|s)(?![a-z0-9])/i;
+
+interface Amount { value: number; hadCurrency: boolean; }
+function amountInfo(raw: string): Amount | null {
+  const hadCurrency = /[$£€₹]/.test(raw) || new RegExp(CURWORD, "i").test(raw);
+  const m = raw.match(/(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?/);
+  if (!m) return null;
+  const intPart = m[1].replace(/,/g, "");
+  const decPart = m[2] ?? "";
+  if (intPart.length > 9 || decPart.length > 2) return null; // reject, don't truncate
+  const value = Number(intPart + (decPart ? "." + decPart : ""));
+  if (!Number.isFinite(value) || value < 0 || value > 1_000_000_000) return null;
+  return { value, hadCurrency };
+}
+
+/** True when the text right after the number means it is NOT a price. */
+function notAPrice(rest: string, value: number, hadCurrency: boolean, ambiguous: boolean): boolean {
+  if (NOSPACE_UNIT.test(rest)) return true; // "100ml", "18s"
+  const sp = rest.match(/^\s+(\p{L}+)/u);
+  if (sp && UNIT_WORDS.has(sp[1].toLowerCase())) return true; // "2 colors", "100 ml"
+  // Ambiguous cues (from/over/above/at least/more than/up to) without a currency
+  // marker do not apply to a plausible year.
+  if (ambiguous && !hadCurrency && Number.isInteger(value) && value >= 1900 && value <= 2100) return true;
+  return false;
+}
+
+interface PriceHit { priceMin?: number; priceMax?: number; text: string; detail: string; }
+
+/** Extract ONE price constraint from `s`, or null. Leaves `s` untouched when a
+ * cue matches but the number is invalid or looks like a year/unit/count. */
+function extractPrice(s: string): { hit: PriceHit; newS: string } | null {
+  const tryCue = (
+    re: RegExp, build: (a: Amount, b?: Amount) => PriceHit, ambiguous: boolean, two = false,
+  ): { hit: PriceHit; newS: string } | null => {
+    const m = re.exec(s);
+    if (!m) return null;
+    const a = amountInfo(m[1]);
+    if (!a) return null;
+    const b = two ? amountInfo(m[2]) : undefined;
+    if (two && !b) return null;
+    const after = s.slice(m.index + m[0].length);
+    const last = two ? b! : a;
+    if (notAPrice(after, last.value, last.hadCurrency, ambiguous)) return null;
+    return { hit: build(a, b ?? undefined), newS: s.replace(m[0], " ") };
+  };
+
+  return (
+    tryCue(new RegExp(String.raw`\bbetween\s+${AMT}\s*(?:and|to|-|–|—)\s*${AMT}`, "i"),
+      (a, b) => { const lo = Math.min(a.value, b!.value), hi = Math.max(a.value, b!.value); return { priceMin: lo, priceMax: hi, text: "between", detail: `price ${lo}–${hi}` }; }, false, true)
+    ?? tryCue(new RegExp(String.raw`(?:\baround\b\s*|\babout\b\s*|\bapproximately\b\s*|~\s*)${AMT}`, "i"),
+      (a) => { const lo = Math.round(a.value * 0.8 * 100) / 100, hi = Math.round(a.value * 1.2 * 100) / 100; return { priceMin: lo, priceMax: hi, text: "around", detail: `price ~${a.value} (${lo}–${hi})` }; }, false)
+    ?? tryCue(new RegExp(String.raw`\b(?:under|below|less than|cheaper than|at most)\s+${AMT}`, "i"),
+      (a) => ({ priceMax: a.value, text: "max", detail: `price ≤ ${a.value}` }), false)
+    ?? tryCue(new RegExp(String.raw`\bup to\s+${AMT}`, "i"),
+      (a) => ({ priceMax: a.value, text: "max", detail: `price ≤ ${a.value}` }), true)
+    ?? tryCue(new RegExp(String.raw`\b(?:over|above|more than|at least|starting at|from)\s+${AMT}`, "i"),
+      (a) => ({ priceMin: a.value, text: "min", detail: `price ≥ ${a.value}` }), true)
+  );
 }
 
 /** Build the per-shop parse context (attributes + live vendor/type values). */
@@ -73,7 +158,31 @@ export async function buildParseContext(exec: Exec, shopId: string, versionId: s
       [shopId, versionId],
     )
   ).map((r) => r.v);
-  return { attributes, vendors, productTypes };
+  // A2: live, VISIBLE tag + configured-metafield values (same visibility as
+  // vendor/product_type above), so attribute phrases resolve case-insensitively
+  // to the actual live casing and never leak a draft-only value.
+  const tagValues = (
+    await exec.rows<{ v: string }>(
+      `SELECT DISTINCT unnest(tags) AS v FROM product_search_doc
+       WHERE shop_id=$1::uuid AND index_version_id=$2::uuid AND published=true AND status='ACTIVE'`,
+      [shopId, versionId],
+    )
+  ).map((r) => r.v).filter((v) => v != null && v !== "");
+  const metafieldValues = (
+    await exec.rows<{ v: string }>(
+      `SELECT DISTINCT metafields->>$3 AS v FROM product_search_doc
+       WHERE shop_id=$1::uuid AND index_version_id=$2::uuid AND published=true AND status='ACTIVE'
+         AND metafields->>$3 IS NOT NULL AND metafields->>$3 <> ''`,
+      [shopId, versionId, FACET_METAFIELD_MAPKEY],
+    )
+  ).map((r) => r.v);
+  return {
+    attributes,
+    vendors,
+    productTypes,
+    tagValues: ciMap(tagValues),
+    metafieldValues: ciMap(metafieldValues),
+  };
 }
 
 interface PhraseEntry {
@@ -93,29 +202,19 @@ export function parseQuery(rawQuery: string, ctx: ParseContext, opts: ParseOptio
 
   let s = " " + String(rawQuery ?? "").slice(0, MAX_PARSE_LEN).toLowerCase() + " ";
 
-  const pushPrice = (min: number | null, max: number | null, text: string, detail: string) => {
-    if (min != null) filters.priceMin = min;
-    if (max != null) filters.priceMax = max;
-    interpreted.push({ kind: "price", text, detail });
-  };
-
-  // --- 1) Price ---
+  // --- 1) Price (Phase 6.1 A1) ---
+  // Iterate so a query can carry e.g. a min AND a max; each pass removes the
+  // matched phrase. Invalid/ambiguous numbers leave `s` untouched (no partial
+  // consumption, text unchanged).
   if (!ignore.has("price")) {
-    const between = new RegExp(String.raw`\bbetween\s+${NUM}\s+(?:and|to|-|–|—)\s+${NUM}`, "i");
-    let m = s.match(between);
-    if (m) { const a = toNum(m[1]); const b = toNum(m[2]); if (a != null && b != null) { pushPrice(Math.min(a, b), Math.max(a, b), m[0].trim(), `price ${Math.min(a, b)}–${Math.max(a, b)}`); s = s.replace(m[0], " "); } }
-
-    const under = new RegExp(String.raw`\b(?:under|below|less than|cheaper than|up to|at most)\s+${NUM}`, "i");
-    m = s.match(under);
-    if (m) { const v = toNum(m[1]); if (v != null) { pushPrice(null, v, m[0].trim(), `price ≤ ${v}`); s = s.replace(m[0], " "); } }
-
-    const over = new RegExp(String.raw`\b(?:over|above|more than|at least|starting at|from)\s+${NUM}`, "i");
-    m = s.match(over);
-    if (m) { const v = toNum(m[1]); if (v != null) { pushPrice(v, null, m[0].trim(), `price ≥ ${v}`); s = s.replace(m[0], " "); } }
-
-    const around = new RegExp(String.raw`\b(?:around|about|approximately|~)\s*${NUM}`, "i");
-    m = s.match(around);
-    if (m) { const v = toNum(m[1]); if (v != null) { const lo = Math.round(v * 0.8 * 100) / 100; const hi = Math.round(v * 1.2 * 100) / 100; pushPrice(lo, hi, m[0].trim(), `price ~${v} (${lo}–${hi})`); s = s.replace(m[0], " "); } }
+    for (let pass = 0; pass < 3; pass++) {
+      const pr = extractPrice(s);
+      if (!pr) break;
+      if (pr.hit.priceMin != null && filters.priceMin == null) filters.priceMin = pr.hit.priceMin;
+      if (pr.hit.priceMax != null && filters.priceMax == null) filters.priceMax = pr.hit.priceMax;
+      interpreted.push({ kind: "price", text: pr.hit.text, detail: pr.hit.detail });
+      s = pr.newS;
+    }
   }
 
   // --- 2) Availability (check out-of-stock first) ---
@@ -160,15 +259,32 @@ export function parseQuery(rawQuery: string, ctx: ParseContext, opts: ParseOptio
   const tagsArr: string[] = [];
   const metaArr: string[] = [];
 
-  const applyEntry = (e: PhraseEntry) => {
-    if (e.source === "vendor") { vendorArr.push(e.original); interpreted.push({ kind: "vendor", text: e.tokens.join(" "), detail: `vendor = ${e.original}` }); return; }
-    if (e.source === "product_type") { typeArr.push(e.original); interpreted.push({ kind: "product_type", text: e.tokens.join(" "), detail: `product type = ${e.original}` }); return; }
+  // Apply one matched entry. Returns false (do NOT consume) when a tag/metafield
+  // attribute value does not resolve to a LIVE visible facet value — it then
+  // stays free text (A2). Vendor/product_type matches already come from live
+  // facet values, so they always apply.
+  const applyEntry = (e: PhraseEntry): boolean => {
+    if (e.source === "vendor") { vendorArr.push(e.original); interpreted.push({ kind: "vendor", text: e.tokens.join(" "), detail: `vendor = ${e.original}` }); return true; }
+    if (e.source === "product_type") { typeArr.push(e.original); interpreted.push({ kind: "product_type", text: e.tokens.join(" "), detail: `product type = ${e.original}` }); return true; }
     const mp = e.mapping!;
-    if (mp.facet === "tags") tagsArr.push(mp.value);
-    else if (mp.facet === "metafield") metaArr.push(mp.value);
-    else if (mp.facet === "product_type") typeArr.push(mp.value);
+    if (mp.facet === "tags") {
+      const live = ctx.tagValues.get(mp.value.toLowerCase());
+      if (!live) return false; // no matching live tag value → stays free text
+      tagsArr.push(live);
+      interpreted.push({ kind: "attribute", text: e.tokens.join(" "), detail: `tags = ${live}` });
+      return true;
+    }
+    if (mp.facet === "metafield") {
+      const live = ctx.metafieldValues.get(mp.value.toLowerCase());
+      if (!live) return false;
+      metaArr.push(live);
+      interpreted.push({ kind: "attribute", text: e.tokens.join(" "), detail: `metafield = ${live}` });
+      return true;
+    }
+    if (mp.facet === "product_type") typeArr.push(mp.value);
     else if (mp.facet === "vendor") vendorArr.push(mp.value);
     interpreted.push({ kind: "attribute", text: e.tokens.join(" "), detail: `${mp.facet} = ${mp.value}` });
+    return true;
   };
 
   for (let i = 0; i < tokens.length; i++) {
@@ -182,14 +298,20 @@ export function parseQuery(rawQuery: string, ctx: ParseContext, opts: ParseOptio
     }
     if (!matched) continue;
     const negated = i > 0 && NEGATIONS.has(tokens[i - 1]);
-    for (let j = 0; j < matched.tokens.length; j++) consumed[i + j] = true;
     if (negated) {
-      consumed[i - 1] = true; // consume the negation marker too
+      // Negation recognised at the dictionary level (independent of live
+      // resolution): consume term + marker, flag it, never apply (A3).
+      for (let j = 0; j < matched.tokens.length; j++) consumed[i + j] = true;
+      consumed[i - 1] = true;
       negations.push(matched.tokens.join(" "));
-    } else {
-      applyEntry(matched);
+      i += matched.tokens.length - 1;
+      continue;
     }
-    i += matched.tokens.length - 1;
+    if (applyEntry(matched)) {
+      for (let j = 0; j < matched.tokens.length; j++) consumed[i + j] = true;
+      i += matched.tokens.length - 1;
+    }
+    // else: unresolved tag/metafield attribute → leave tokens as free text.
   }
 
   if (vendorArr.length) filters.vendor = vendorArr;

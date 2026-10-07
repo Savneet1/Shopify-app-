@@ -154,6 +154,11 @@ export default function SearchPlayground() {
                       <div style={{ color: "#666" }}>
                         remaining free text: <code>{result.interpretedAs.remaining || "—"}</code>
                       </div>
+                      {result.interpretedAs.warning && (
+                        <div role="alert" style={{ marginTop: 6, color: "#8a4b00", background: "#fff4e5", padding: "0.4rem 0.6rem", borderRadius: 6 }}>
+                          ⚠ {result.interpretedAs.warning}
+                        </div>
+                      )}
                     </div>
                   )}
 

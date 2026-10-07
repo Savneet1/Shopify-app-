@@ -151,6 +151,23 @@ New tenant table (RLS enabled+forced, app_runtime grants): `search_attribute_ter
 (migration 0009). Negative filtering is intentionally unsupported (negation
 degrades safely). Benchmarks remain **Phase 14**.
 
+## Phase 6.1 — NL parser fix batch (Implemented; Prisma execution pg-verified)
+
+Third-party services: **none**. Scopes added: **none**. npm deps added:
+**none**. PostgreSQL extensions added: **none**. Migrations added: **none**.
+Rule-based + deterministic. See `docs/PHASE6_1.md`.
+
+| ID | Fix | Status | Class | Tests | Location |
+|---|---|---|---|---|---|
+| A1 | Price parsing: thousands commas (`under $1,000`→1000); reject (not truncate) >9 integer digits / >2 decimals; fix `~` cue; `between 10-50` (hyphen/en-dash, no spaces); unit/count words (`ml`,`kg`,`colors`,`stars`,`18s`…) are not prices; ambiguous cues (`from`/`over`/`above`/`at least`/`more than`/`up to`) skip plausible years (1900–2100) unless a currency marker is present | Implemented | FULLY | `phase6-units` (A1 block) | `nlparse.ts` (`amountInfo`, `notAPrice`, `extractPrice`) |
+| A2 | Tag/metafield attribute values (defaults + per-shop dictionary) resolve case-insensitively against LIVE visible facet values and apply the live casing; no live match ⇒ not applied (stays free text); no draft leakage; per-shop isolated | Implemented | FULLY | `phase6_1` (A2) | `nlparse.ts` (`buildParseContext` live tag/metafield values, `ciMap`, `applyEntry`) |
+| A3 | Negation transparency: `interpretedAs.negationIgnored` + human-readable `warning`; playground shows the warning | Implemented | FULLY | `phase6_1` (A3) | `storefront.ts` (`InterpretedAs`, `negationWarning`), `app/routes/app.search.tsx` |
+| A4 | Strip C0 control chars (incl. NUL `0x00`) from `q` and free-text filter values in the SHARED normalization path — a NUL can no longer reach SQL (nl on or off) | Implemented | FULLY | `phase6_1` (A4) | `text.ts` (`stripControl`), `query.ts`, `filters.ts` |
+
+No migration, no schema change, no new indexed field: `docInsertSql` remains the
+single source of truth. One query planner still drives search and facets.
+Benchmarks remain **Phase 14**.
+
 ## Later phases (Planned — preserved, not implemented)
 
 | ID | Area | Status | Phase | Notes / class |

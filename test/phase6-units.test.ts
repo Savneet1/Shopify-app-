@@ -10,6 +10,13 @@ const ctx: ParseContext = {
   ]),
   vendors: ["Nike", "The North Face"],
   productTypes: ["Shoe", "Running Jacket"],
+  // A2: live visible facet values the attribute phrases resolve against.
+  tagValues: new Map([
+    ["red", "red"],
+    ["rose gold", "rose gold"],
+    ["large", "large"],
+  ]),
+  metafieldValues: new Map([["leather", "leather"]]),
 };
 
 describe("Phase 6 parser — price phrasings", () => {
@@ -122,5 +129,70 @@ describe("Phase 6 parser — safety / hostile input", () => {
     const a = JSON.stringify(parseQuery("cheap red Nike shoe under $50 in stock", ctx));
     const b = JSON.stringify(parseQuery("cheap red Nike shoe under $50 in stock", ctx));
     expect(a).toBe(b);
+  });
+});
+
+// ---- Phase 6.1 A1: price-parsing hardening --------------------------------
+describe("Phase 6.1 A1 — price parsing", () => {
+  it('"under $1,000" → priceMax 1000 and empty remainder', () => {
+    const r = parseQuery("under $1,000", ctx);
+    expect(r.filters.priceMax).toBe(1000);
+    expect(r.filters.priceMin).toBeUndefined();
+    expect(r.remaining).toBe("");
+  });
+
+  it('"~100" and "shoes ~100" → ±20% range applied (fixes the \\b-before-~ bug)', () => {
+    const r1 = parseQuery("~100", ctx);
+    expect(r1.filters.priceMin).toBe(80);
+    expect(r1.filters.priceMax).toBe(120);
+    const r2 = parseQuery("shoes ~100", ctx);
+    expect(r2.filters.priceMin).toBe(80);
+    expect(r2.filters.priceMax).toBe(120);
+    expect(r2.remaining).toBe("shoes");
+  });
+
+  it('"under 12345678" and "under 99.999" → no partial consumption', () => {
+    // 8 integer digits is valid: the WHOLE number is taken (not 1234567 + "8").
+    const big = parseQuery("under 12345678", ctx);
+    expect(big.filters.priceMax).toBe(12345678);
+    expect(big.remaining).toBe("");
+    // >2 decimals is rejected whole: no price, and no truncated "99.99" leaks.
+    const dec = parseQuery("under 99.999", ctx);
+    expect(dec.filters.priceMax).toBeUndefined();
+    expect(dec.filters.priceMin).toBeUndefined();
+    expect(dec.remaining).toContain("999"); // full fractional part survives, not orphaned "9"
+    // >9 integer digits is rejected whole.
+    const huge = parseQuery("under 9999999999", ctx);
+    expect(huge.filters.priceMax).toBeUndefined();
+    expect(huge.remaining).toContain("9999999999");
+  });
+
+  it('"between 10-50" (hyphen, no spaces) → 10..50', () => {
+    const r = parseQuery("between 10-50", ctx);
+    expect(r.filters.priceMin).toBe(10);
+    expect(r.filters.priceMax).toBe(50);
+    const en = parseQuery("between 10–50", ctx); // en-dash
+    expect(en.filters.priceMin).toBe(10);
+    expect(en.filters.priceMax).toBe(50);
+  });
+
+  it("ambiguous cues over a year / count / unit → NO price filter", () => {
+    for (const q of ["from 2020 collection", "at least 2 colors", "for over 18s", "under 100ml bottle"]) {
+      const r = parseQuery(q, ctx);
+      expect(r.filters.priceMin, q).toBeUndefined();
+      expect(r.filters.priceMax, q).toBeUndefined();
+    }
+  });
+
+  it("a currency marker overrides the year rule for ambiguous cues", () => {
+    const r = parseQuery("from $2020", ctx);
+    expect(r.filters.priceMin).toBe(2020);
+  });
+
+  it("a non-price number followed by a unit word is not a price", () => {
+    for (const q of ["5kg bag", "18s", "100 ml bottle", "2 pack", "4 stars"]) {
+      const r = parseQuery("under " + q, ctx);
+      expect(r.filters.priceMax, q).toBeUndefined();
+    }
   });
 });

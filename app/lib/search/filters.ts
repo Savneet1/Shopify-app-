@@ -1,4 +1,5 @@
 import { TS_CONFIG, FACET_METAFIELD_MAPKEY } from "./config";
+import { stripControl } from "./text";
 
 /**
  * Phase 4 filter model + parameterised predicate builders.
@@ -73,7 +74,7 @@ function toArray(v: string[] | string | undefined, field: string): string[] {
   const out: string[] = [];
   for (const raw of arr) {
     if (raw == null) continue;
-    const s = String(raw).trim();
+    const s = stripControl(String(raw)).trim(); // A4: no control chars reach SQL
     if (s.length === 0) continue;
     if (s.length > MAX_FILTER_STR) {
       throw new FilterValidationError(`value too long for '${field}' (max ${MAX_FILTER_STR})`);
@@ -111,8 +112,8 @@ export function normalizeFilters(raw: RawFilters | undefined): SearchFilters {
     throw new FilterValidationError("priceMin must be <= priceMax");
   }
   let collectionId: string | null = null;
-  if (f.collectionId != null && String(f.collectionId).trim() !== "") {
-    collectionId = String(f.collectionId).trim();
+  if (f.collectionId != null && stripControl(String(f.collectionId)).trim() !== "") {
+    collectionId = stripControl(String(f.collectionId)).trim();
     if (collectionId.length > MAX_COLLECTION_ID) {
       throw new FilterValidationError(`collectionId too long (max ${MAX_COLLECTION_ID})`);
     }

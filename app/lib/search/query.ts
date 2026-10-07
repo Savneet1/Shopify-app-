@@ -9,6 +9,7 @@ import {
 } from "./filters";
 import { buildWhere, skuHitPredicate, type PlannedMatch, type PlanLevel } from "./match";
 import { buildPlan, andLex, prefixLex, orLex, fuzzyLex, type QueryPlan } from "./rewrite";
+import { stripControl } from "./text";
 import {
   CLASS_WEIGHT,
   FIELD_SCALE,
@@ -85,7 +86,8 @@ export interface SearchResponse {
 }
 
 export function normalizeParams(p: SearchParams): { q: string; limit: number; offset: number } {
-  const q = String(p.q ?? "").slice(0, MAX_QUERY_LEN).trim();
+  // A4: strip C0 control chars (incl. NUL) so they can never reach SQL.
+  const q = stripControl(String(p.q ?? "")).slice(0, MAX_QUERY_LEN).trim();
   let limit = Number.isFinite(p.limit) ? Math.floor(Number(p.limit)) : DEFAULT_LIMIT;
   if (!Number.isFinite(limit) || limit <= 0) limit = DEFAULT_LIMIT;
   limit = Math.min(limit, MAX_LIMIT);
