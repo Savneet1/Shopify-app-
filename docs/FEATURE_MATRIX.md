@@ -168,6 +168,20 @@ No migration, no schema change, no new indexed field: `docInsertSql` remains the
 single source of truth. One query planner still drives search and facets.
 Benchmarks remain **Phase 14**.
 
+## Phase 6.1b — NL parser follow-up fixes (Implemented; Prisma execution pg-verified)
+
+Third-party services / scopes / deps / extensions / migrations added: **none**.
+Rule-based + deterministic. See `docs/PHASE6_1.md` §"Phase 6.1b".
+
+| ID | Fix | Status | Class | Tests | Location |
+|---|---|---|---|---|---|
+| B1 | Mixed-case duplicate facet values: resolve lower-case → **all** live casings (tags, metafield, vendor, product_type) and apply all (OR-within-group), so `"red"` finds products tagged `red`/`Red`/`RED`. Live-visible only; no draft leakage; per-shop isolated; deterministic | Implemented | FULLY | `phase6_1` (B1) | `nlparse.ts` (`ciMapMulti`, `buildParseContext`, `applyEntry`) |
+| B2 | Malformed thousands grouping: accept commas only in proper 1–3 then groups-of-3; `under 1,00` / `under 1,0000` → no price, text unchanged; `under $1,000`/`under 1000` → 1000 | Implemented | FULLY | `phase6-units` (B2) | `nlparse.ts` (`extractPrice` boundary check) |
+| B3 | Ambiguous cues (`from over above at least more than up to`) without a currency marker apply only if the number is the last token, or is followed by a currency word or a recognised vendor/type/attribute phrase; else ignored. Unambiguous cues unchanged | Implemented | FULLY | `phase6-units` (B3) | `nlparse.ts` (`notAPrice`, `knownFirstTokens`) |
+
+Still no migration, schema change, or new indexed field. Benchmarks remain
+**Phase 14**.
+
 ## Later phases (Planned — preserved, not implemented)
 
 | ID | Area | Status | Phase | Notes / class |

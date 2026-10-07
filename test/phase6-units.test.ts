@@ -10,13 +10,14 @@ const ctx: ParseContext = {
   ]),
   vendors: ["Nike", "The North Face"],
   productTypes: ["Shoe", "Running Jacket"],
-  // A2: live visible facet values the attribute phrases resolve against.
+  // A2/B1: live visible facet values (lower-case → all live casings) the
+  // attribute phrases resolve against.
   tagValues: new Map([
-    ["red", "red"],
-    ["rose gold", "rose gold"],
-    ["large", "large"],
+    ["red", ["red"]],
+    ["rose gold", ["rose gold"]],
+    ["large", ["large"]],
   ]),
-  metafieldValues: new Map([["leather", "leather"]]),
+  metafieldValues: new Map([["leather", ["leather"]]]),
 };
 
 describe("Phase 6 parser — price phrasings", () => {
@@ -194,5 +195,45 @@ describe("Phase 6.1 A1 — price parsing", () => {
       const r = parseQuery("under " + q, ctx);
       expect(r.filters.priceMax, q).toBeUndefined();
     }
+  });
+});
+
+// ---- Phase 6.1b B2: malformed thousands grouping --------------------------
+describe("Phase 6.1b B2 — thousands grouping", () => {
+  it("rejects malformed grouping; keeps valid grouping", () => {
+    // Malformed → NO price filter (the digits stay as free text, not consumed).
+    for (const q of ["under 1,00", "under 1,0000"]) {
+      const r = parseQuery(q, ctx);
+      expect(r.filters.priceMax, q).toBeUndefined();
+      expect(r.filters.priceMin, q).toBeUndefined();
+    }
+    // Valid → priceMax 1000.
+    expect(parseQuery("under $1,000", ctx).filters.priceMax).toBe(1000);
+    expect(parseQuery("under 1000", ctx).filters.priceMax).toBe(1000);
+    expect(parseQuery("under 1,000", ctx).filters.priceMax).toBe(1000);
+    // Proper multi-group + decimals.
+    const big = parseQuery("under 12,345.50", ctx);
+    expect(big.filters.priceMax).toBe(12345.5);
+  });
+});
+
+// ---- Phase 6.1b B3: ambiguous cues + plain nouns --------------------------
+describe("Phase 6.1b B3 — ambiguous cue gate", () => {
+  it("ambiguous cue over a plain noun → NO price", () => {
+    expect(parseQuery("up to 5 people", ctx).filters.priceMax).toBeUndefined();
+    expect(parseQuery("from 2020 collection", ctx).filters.priceMin).toBeUndefined();
+  });
+  it("ambiguous cue applies when the number is the last token", () => {
+    expect(parseQuery("up to 50", ctx).filters.priceMax).toBe(50);
+    expect(parseQuery("over 1500", ctx).filters.priceMin).toBe(1500);
+  });
+  it("ambiguous cue applies when a vendor/type/currency word follows", () => {
+    expect(parseQuery("up to 50 nike shoes", ctx).filters.priceMax).toBe(50); // vendor follows
+    expect(parseQuery("from $20 jackets", ctx).filters.priceMin).toBe(20); // currency marker
+    expect(parseQuery("over 30 dollars", ctx).filters.priceMin).toBe(30); // currency word
+  });
+  it("unambiguous cues are NOT gated by the following word", () => {
+    expect(parseQuery("under 50 people", ctx).filters.priceMax).toBe(50);
+    expect(parseQuery("between 10 and 50 people", ctx).filters.priceMax).toBe(50);
   });
 });

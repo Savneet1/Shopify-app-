@@ -38,24 +38,35 @@ export interface ParseContext {
   attributes: Map<string, AttrMapping>;
   vendors: string[];
   productTypes: string[];
-  /** Live, visible tag values keyed by lower-case → original live casing (A2). */
-  tagValues: Map<string, string>;
-  /** Live, visible configured-metafield values, lower-case → live casing (A2). */
-  metafieldValues: Map<string, string>;
+  /** Live, visible tag values keyed by lower-case → ALL live casings (B1). */
+  tagValues: Map<string, string[]>;
+  /** Live, visible configured-metafield values, lower-case → ALL live casings (B1). */
+  metafieldValues: Map<string, string[]>;
+  /** Live vendor values keyed by tokenised-join → ALL live casings (B1). Optional:
+   * a directly-constructed ctx may omit it (falls back to the matched value). */
+  vendorValues?: Map<string, string[]>;
+  /** Live product-type values keyed by tokenised-join → ALL live casings (B1). */
+  productTypeValues?: Map<string, string[]>;
 }
 
-/** Build a case-insensitive lookup (lower-case → live casing). Deterministic:
- * when two live values collide case-insensitively, the lexicographically first
- * original casing wins. */
-function ciMap(values: string[]): Map<string, string> {
-  const sorted = [...values].sort((a, b) => a.localeCompare(b));
-  const m = new Map<string, string>();
-  for (const v of sorted) {
-    const k = v.toLowerCase();
-    if (!m.has(k)) m.set(k, v);
+/** Group values case-insensitively: key → ALL original casings for that key,
+ * de-duplicated and lexicographically sorted (deterministic). `keyOf` picks the
+ * grouping key (lower-case for tags/metafields, tokenised-join for vendor/type).
+ * Applying ALL casings is correct because a facet group is OR-within-group, so a
+ * query for "red" widens to products tagged "red" OR "Red" OR "RED". */
+function ciMapMulti(values: string[], keyOf: (v: string) => string): Map<string, string[]> {
+  const m = new Map<string, string[]>();
+  for (const v of values) {
+    const k = keyOf(v);
+    if (k === "") continue;
+    const arr = m.get(k);
+    if (arr) { if (!arr.includes(v)) arr.push(v); } else m.set(k, [v]);
   }
+  for (const arr of m.values()) arr.sort((a, b) => a.localeCompare(b));
   return m;
 }
+const lc = (v: string) => v.toLowerCase();
+const tokKey = (v: string) => tokenize(v).join(" ");
 
 export interface ParseOptions {
   ignore?: Set<InterpretKind>;
@@ -94,22 +105,41 @@ function amountInfo(raw: string): Amount | null {
   return { value, hadCurrency };
 }
 
-/** True when the text right after the number means it is NOT a price. */
-function notAPrice(rest: string, value: number, hadCurrency: boolean, ambiguous: boolean): boolean {
+// Standalone currency WORD (for the B3 follow-token gate).
+const CURWORD_SOLE = /^(?:dollars?|usd|rs|inr|rupees?|pounds?|gbp|euros?|eur)$/i;
+
+/** True when the text right after the number means it is NOT a price.
+ * `recognized(word)` reports whether a following word begins a known
+ * vendor/product_type/attribute phrase (used only for the B3 ambiguous gate). */
+function notAPrice(
+  rest: string, value: number, hadCurrency: boolean, ambiguous: boolean,
+  recognized: (word: string) => boolean,
+): boolean {
   if (NOSPACE_UNIT.test(rest)) return true; // "100ml", "18s"
   const sp = rest.match(/^\s+(\p{L}+)/u);
   if (sp && UNIT_WORDS.has(sp[1].toLowerCase())) return true; // "2 colors", "100 ml"
-  // Ambiguous cues (from/over/above/at least/more than/up to) without a currency
-  // marker do not apply to a plausible year.
-  if (ambiguous && !hadCurrency && Number.isInteger(value) && value >= 1900 && value <= 2100) return true;
+  if (ambiguous && !hadCurrency) {
+    // Ambiguous cues (from/over/above/at least/more than/up to) without a
+    // currency marker never apply to a plausible year.
+    if (Number.isInteger(value) && value >= 1900 && value <= 2100) return true;
+    // B3: apply only if the number is the last token, or is followed by a
+    // currency word or a recognised vendor/type/attribute phrase. Any other
+    // plain word ("up to 5 people") means it is not a price.
+    const next = rest.match(/^\s*(\p{L}[\p{L}\p{N}]*)/u);
+    if (next) {
+      const w = next[1].toLowerCase();
+      if (!CURWORD_SOLE.test(w) && !recognized(w)) return true;
+    }
+  }
   return false;
 }
 
 interface PriceHit { priceMin?: number; priceMax?: number; text: string; detail: string; }
 
 /** Extract ONE price constraint from `s`, or null. Leaves `s` untouched when a
- * cue matches but the number is invalid or looks like a year/unit/count. */
-function extractPrice(s: string): { hit: PriceHit; newS: string } | null {
+ * cue matches but the number is invalid, malformed, or looks like a
+ * year/unit/count/plain-noun. */
+function extractPrice(s: string, recognized: (word: string) => boolean): { hit: PriceHit; newS: string } | null {
   const tryCue = (
     re: RegExp, build: (a: Amount, b?: Amount) => PriceHit, ambiguous: boolean, two = false,
   ): { hit: PriceHit; newS: string } | null => {
@@ -120,8 +150,14 @@ function extractPrice(s: string): { hit: PriceHit; newS: string } | null {
     const b = two ? amountInfo(m[2]) : undefined;
     if (two && !b) return null;
     const after = s.slice(m.index + m[0].length);
+    // B2: malformed thousands grouping / orphan digit. A valid amount is fully
+    // consumed (the `\d+` branch is greedy; proper comma groups end on a
+    // non-digit). If the next char is a digit ("1,0000" → "0") or a comma
+    // followed by a digit ("1,00" → ",00"), the number was malformed → reject
+    // the whole thing, leaving the text unchanged.
+    if (/^,?\d/.test(after)) return null;
     const last = two ? b! : a;
-    if (notAPrice(after, last.value, last.hadCurrency, ambiguous)) return null;
+    if (notAPrice(after, last.value, last.hadCurrency, ambiguous, recognized)) return null;
     return { hit: build(a, b ?? undefined), newS: s.replace(m[0], " ") };
   };
 
@@ -180,8 +216,10 @@ export async function buildParseContext(exec: Exec, shopId: string, versionId: s
     attributes,
     vendors,
     productTypes,
-    tagValues: ciMap(tagValues),
-    metafieldValues: ciMap(metafieldValues),
+    tagValues: ciMapMulti(tagValues, lc),
+    metafieldValues: ciMapMulti(metafieldValues, lc),
+    vendorValues: ciMapMulti(vendors, tokKey),
+    productTypeValues: ciMapMulti(productTypes, tokKey),
   };
 }
 
@@ -202,13 +240,21 @@ export function parseQuery(rawQuery: string, ctx: ParseContext, opts: ParseOptio
 
   let s = " " + String(rawQuery ?? "").slice(0, MAX_PARSE_LEN).toLowerCase() + " ";
 
-  // --- 1) Price (Phase 6.1 A1) ---
+  // First token of every known vendor / product_type / attribute phrase — used
+  // by the B3 ambiguous-cue gate to decide whether a number is a price.
+  const knownFirstTokens = new Set<string>();
+  for (const v of ctx.vendors) { const t = tokenize(v); if (t.length) knownFirstTokens.add(t[0]); }
+  for (const v of ctx.productTypes) { const t = tokenize(v); if (t.length) knownFirstTokens.add(t[0]); }
+  for (const phrase of ctx.attributes.keys()) { const t = tokenize(phrase); if (t.length) knownFirstTokens.add(t[0]); }
+  const recognized = (w: string) => knownFirstTokens.has(w);
+
+  // --- 1) Price (Phase 6.1 A1/6.1b) ---
   // Iterate so a query can carry e.g. a min AND a max; each pass removes the
-  // matched phrase. Invalid/ambiguous numbers leave `s` untouched (no partial
-  // consumption, text unchanged).
+  // matched phrase. Invalid/ambiguous/malformed numbers leave `s` untouched (no
+  // partial consumption, text unchanged).
   if (!ignore.has("price")) {
     for (let pass = 0; pass < 3; pass++) {
-      const pr = extractPrice(s);
+      const pr = extractPrice(s, recognized);
       if (!pr) break;
       if (pr.hit.priceMin != null && filters.priceMin == null) filters.priceMin = pr.hit.priceMin;
       if (pr.hit.priceMax != null && filters.priceMax == null) filters.priceMax = pr.hit.priceMax;
@@ -259,31 +305,52 @@ export function parseQuery(rawQuery: string, ctx: ParseContext, opts: ParseOptio
   const tagsArr: string[] = [];
   const metaArr: string[] = [];
 
-  // Apply one matched entry. Returns false (do NOT consume) when a tag/metafield
-  // attribute value does not resolve to a LIVE visible facet value — it then
-  // stays free text (A2). Vendor/product_type matches already come from live
-  // facet values, so they always apply.
+  // "tags = red (3 casings)" when more than one live casing applies, else
+  // "tags = Red". Keeps the detail readable while signalling the widening.
+  const detail = (label: string, phrase: string, casings: string[]) =>
+    casings.length > 1 ? `${label} = ${phrase} (${casings.length} casings)` : `${label} = ${casings[0] ?? phrase}`;
+
+  // Apply one matched entry. Returns false (do NOT consume) when a value does
+  // not resolve to any LIVE visible facet value — it then stays free text (A2).
+  // B1: ALL live casings of the matched value are applied (OR-within-group), so
+  // a product tagged "Red" is not silently excluded by a query for "red".
   const applyEntry = (e: PhraseEntry): boolean => {
-    if (e.source === "vendor") { vendorArr.push(e.original); interpreted.push({ kind: "vendor", text: e.tokens.join(" "), detail: `vendor = ${e.original}` }); return true; }
-    if (e.source === "product_type") { typeArr.push(e.original); interpreted.push({ kind: "product_type", text: e.tokens.join(" "), detail: `product type = ${e.original}` }); return true; }
+    if (e.source === "vendor") {
+      const casings = ctx.vendorValues?.get(e.tokens.join(" ")) ?? [e.original];
+      if (casings.length === 0) return false;
+      vendorArr.push(...casings);
+      interpreted.push({ kind: "vendor", text: e.tokens.join(" "), detail: detail("vendor", e.tokens.join(" "), casings) });
+      return true;
+    }
+    if (e.source === "product_type") {
+      const casings = ctx.productTypeValues?.get(e.tokens.join(" ")) ?? [e.original];
+      if (casings.length === 0) return false;
+      typeArr.push(...casings);
+      interpreted.push({ kind: "product_type", text: e.tokens.join(" "), detail: detail("product type", e.tokens.join(" "), casings) });
+      return true;
+    }
     const mp = e.mapping!;
+    const phrase = e.tokens.join(" ");
     if (mp.facet === "tags") {
-      const live = ctx.tagValues.get(mp.value.toLowerCase());
-      if (!live) return false; // no matching live tag value → stays free text
-      tagsArr.push(live);
-      interpreted.push({ kind: "attribute", text: e.tokens.join(" "), detail: `tags = ${live}` });
+      const casings = ctx.tagValues.get(mp.value.toLowerCase());
+      if (!casings || casings.length === 0) return false; // no live tag value → free text
+      tagsArr.push(...casings);
+      interpreted.push({ kind: "attribute", text: phrase, detail: detail("tags", mp.value, casings) });
       return true;
     }
     if (mp.facet === "metafield") {
-      const live = ctx.metafieldValues.get(mp.value.toLowerCase());
-      if (!live) return false;
-      metaArr.push(live);
-      interpreted.push({ kind: "attribute", text: e.tokens.join(" "), detail: `metafield = ${live}` });
+      const casings = ctx.metafieldValues.get(mp.value.toLowerCase());
+      if (!casings || casings.length === 0) return false;
+      metaArr.push(...casings);
+      interpreted.push({ kind: "attribute", text: phrase, detail: detail("metafield", mp.value, casings) });
       return true;
     }
-    if (mp.facet === "product_type") typeArr.push(mp.value);
-    else if (mp.facet === "vendor") vendorArr.push(mp.value);
-    interpreted.push({ kind: "attribute", text: e.tokens.join(" "), detail: `${mp.facet} = ${mp.value}` });
+    // Attribute → vendor / product_type facet: resolve to all live casings too.
+    const map = mp.facet === "product_type" ? ctx.productTypeValues : ctx.vendorValues;
+    const casings = map?.get(tokKey(mp.value)) ?? [mp.value];
+    if (casings.length === 0) return false;
+    if (mp.facet === "product_type") typeArr.push(...casings); else vendorArr.push(...casings);
+    interpreted.push({ kind: "attribute", text: phrase, detail: detail(mp.facet, mp.value, casings) });
     return true;
   };
 

@@ -16,6 +16,7 @@ import { storefrontSearchWithExec } from "~/lib/search/storefront";
 interface Seed {
   gid: string; title: string; vendor: string; type: string; tags: string[];
   price: string; available: boolean; status?: string; published?: boolean; created?: string;
+  material?: string;
 }
 async function seed(db: TestDb, shop: string, s: Seed) {
   await db.withShopExec(shop, async (e) => {
@@ -24,7 +25,8 @@ async function seed(db: TestDb, shop: string, s: Seed) {
       tags: s.tags, status: s.status ?? "ACTIVE",
       // published = (online_store_url IS NOT NULL); a null URL = unpublished.
       onlineStoreUrl: (s.published ?? true) ? `https://x/${s.gid}` : null,
-      metafields: {}, productCreatedAt: s.created ?? "2024-01-01T00:00:00Z",
+      metafields: s.material ? { "custom.material": s.material } : {},
+      productCreatedAt: s.created ?? "2024-01-01T00:00:00Z",
     });
     await upsertVariant(e, shop, id, { shopifyVariantGid: s.gid + "/v", sku: "SKU-" + s.gid, price: s.price, availableForSale: s.available });
   });
@@ -93,6 +95,80 @@ describe("Phase 6.1 — fix batch", () => {
       const b = await db.withShopExec(shopB, (e) => storefrontSearchWithExec(e, shopB, { q: "red" }));
       expect(b.appliedFilters.tags ?? []).not.toContain("Red");
       expect(b.appliedFilters.tags ?? []).not.toContain("red");
+    });
+  });
+
+  // --- B1: ALL live casings applied (mixed-case duplicates) ---
+  describe("B1 — mixed-case duplicates apply ALL live casings", () => {
+    it('tags "red"/"Red"/"RED" on three products → "red" finds all three; NL == manual', async () => {
+      const shop = await db.resolveShop("b1a.myshopify.com");
+      await seed(db, shop, { gid: "1", title: "P lower", vendor: "V", type: "Tee", tags: ["red"], price: "10.00", available: true });
+      await seed(db, shop, { gid: "2", title: "P title", vendor: "V", type: "Tee", tags: ["Red"], price: "20.00", available: true });
+      await seed(db, shop, { gid: "3", title: "P upper", vendor: "V", type: "Tee", tags: ["RED"], price: "30.00", available: true });
+      await build(db, shop);
+
+      const nl = await db.withShopExec(shop, (e) => storefrontSearchWithExec(e, shop, { q: "red" }));
+      expect(nl.total).toBe(3);
+      expect(nl.products.map((p) => p.id).sort()).toHaveLength(3);
+      // All three casings are applied as the tag filter.
+      expect([...(nl.appliedFilters.tags ?? [])].sort()).toEqual(["RED", "Red", "red"]);
+
+      // NL == manual-equivalent (products, total, facets) with the same casings.
+      const manual = await db.withShopExec(shop, (e) => storefrontSearchWithExec(e, shop, {
+        q: "", nl: false, filters: { tags: ["red", "Red", "RED"] },
+      }));
+      expect(nl.products.map((p) => p.id)).toEqual(manual.products.map((p) => p.id));
+      expect(nl.total).toBe(manual.total);
+      const norm = (fs: any[]) => fs.map((f) => ({ key: f.key, opts: f.options.map((o: any) => [o.value, o.count]).sort() })).sort((a, b) => a.key.localeCompare(b.key));
+      expect(norm(nl.facets)).toEqual(norm(manual.facets));
+    });
+
+    it("a configured metafield value in two casings → both applied", async () => {
+      const shop = await db.resolveShop("b1b.myshopify.com");
+      await seed(db, shop, { gid: "1", title: "Leather A", vendor: "V", type: "Bag", tags: [], price: "10.00", available: true, material: "Leather" });
+      await seed(db, shop, { gid: "2", title: "Leather B", vendor: "V", type: "Bag", tags: [], price: "20.00", available: true, material: "LEATHER" });
+      await build(db, shop);
+
+      const r = await db.withShopExec(shop, (e) => storefrontSearchWithExec(e, shop, { q: "leather" }));
+      expect(r.total).toBe(2);
+      expect([...(r.appliedFilters.metafield ?? [])].sort()).toEqual(["LEATHER", "Leather"]);
+    });
+
+    it('vendor "Nike" and "NIKE" → "nike" finds both', async () => {
+      const shop = await db.resolveShop("b1c.myshopify.com");
+      await seed(db, shop, { gid: "1", title: "Nike A", vendor: "Nike", type: "Shoe", tags: [], price: "10.00", available: true });
+      await seed(db, shop, { gid: "2", title: "Nike B", vendor: "NIKE", type: "Shoe", tags: [], price: "20.00", available: true });
+      await build(db, shop);
+
+      const r = await db.withShopExec(shop, (e) => storefrontSearchWithExec(e, shop, { q: "nike" }));
+      expect(r.total).toBe(2);
+      expect([...(r.appliedFilters.vendor ?? [])].sort()).toEqual(["NIKE", "Nike"]);
+    });
+
+    it("a draft-only casing is never applied", async () => {
+      const shop = await db.resolveShop("b1d.myshopify.com");
+      // "red" (lower) is published; "RED" exists ONLY on a draft product.
+      await seed(db, shop, { gid: "1", title: "Live red", vendor: "V", type: "Tee", tags: ["red"], price: "10.00", available: true });
+      await seed(db, shop, { gid: "2", title: "Draft RED", vendor: "V", type: "Tee", tags: ["RED"], price: "20.00", available: true, status: "DRAFT" });
+      await build(db, shop);
+
+      const r = await db.withShopExec(shop, (e) => storefrontSearchWithExec(e, shop, { q: "red" }));
+      expect([...(r.appliedFilters.tags ?? [])]).toEqual(["red"]); // only the live casing
+      expect(r.products.map((p) => p.title)).not.toContain("Draft RED");
+    });
+
+    it("cross-shop casings do not leak", async () => {
+      const shopA = await db.resolveShop("b1e-a.myshopify.com");
+      await seed(db, shopA, { gid: "1", title: "A", vendor: "V", type: "Tee", tags: ["RED"], price: "10.00", available: true });
+      await build(db, shopA);
+      const shopB = await db.resolveShop("b1e-b.myshopify.com");
+      await seed(db, shopB, { gid: "1", title: "B", vendor: "V", type: "Tee", tags: ["red"], price: "10.00", available: true });
+      await build(db, shopB);
+
+      const a = await db.withShopExec(shopA, (e) => storefrontSearchWithExec(e, shopA, { q: "red" }));
+      expect([...(a.appliedFilters.tags ?? [])]).toEqual(["RED"]); // A's only casing
+      const b = await db.withShopExec(shopB, (e) => storefrontSearchWithExec(e, shopB, { q: "red" }));
+      expect([...(b.appliedFilters.tags ?? [])]).toEqual(["red"]); // B's only casing — A's "RED" never leaks
     });
   });
 

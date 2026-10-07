@@ -98,38 +98,98 @@ query (`normalizeParams`) and to free-text filter values (`toArray`,
 `collectionId`), for **both** `nl: true` and `nl: false`. A NUL-containing query
 now returns results normally instead of erroring.
 
+## Phase 6.1b — follow-up fixes (built on `583ea81`)
+
+A second small fix batch on three defects independent probes found after 6.1.
+Same global rules: no migration, schema change, new indexed field, scope,
+dependency or extension.
+
+### B1 — mixed-case duplicate facet values (`nlparse.ts`)
+
+6.1's `ciMap` kept a single casing per lower-cased key, so a shop holding the
+same value in several casings had products silently excluded.
+
+| Setup | Query | Before (defect) | After |
+|---|---|---|---|
+| products tagged `red`, `Red`, `RED` | `red` | only the one `red`-tagged product (Phase 5 plain search would have found all three) | all three; `tags = red (3 casings)`; `appliedFilters.tags = [RED, Red, red]` |
+| metafield `Leather` + `LEATHER` | `leather` | one casing | both applied |
+| vendors `Nike` + `NIKE` | `nike` | one casing | both applied |
+| `red` live, `RED` draft-only | `red` | — | only `red` (no draft leakage) |
+| shop A `RED`, shop B `red` | `red` | — | each shop sees only its own casing (no cross-tenant leak) |
+
+`ciMapMulti` now maps a key → **all** live casings (de-duplicated,
+lexicographically sorted → deterministic). The facet group is OR-within-group, so
+applying all casings widens correctly. Done for tags, the configured metafield,
+vendor and product_type. Still live-visible values only (published + `ACTIVE`,
+active version); no live match ⇒ not applied (stays free text); per-shop isolated.
+
+### B2 — malformed thousands grouping (`nlparse.ts`)
+
+Commas are accepted only in proper grouping (1–3 digits, then groups of exactly
+3). After matching, an amount immediately followed by a digit (`1,0000`→`0`) or a
+comma-then-digit (`1,00`→`,00`) is a malformed number and is rejected whole.
+
+| Input | Before | After |
+|---|---|---|
+| `under 1,00` | `priceMax 1` (+ stray text) | **no price**, text unchanged |
+| `under 1,0000` | `priceMax 1000` (+ stray `0`) | **no price**, text unchanged |
+| `under $1,000` | 1000 | 1000 (unchanged) |
+| `under 1000` | 1000 | 1000 (unchanged) |
+| `under 12,345.50` | — | `priceMax 12345.50` |
+
+### B3 — ambiguous cues over plain nouns (`nlparse.ts`)
+
+For the **ambiguous** cues only (`from over above at least more than up to`)
+without a currency marker, the number is a price only if it is the last token, or
+is followed by a currency word or a recognised vendor/product_type/attribute
+phrase; any other plain word means it is not a price. **Unambiguous** cues
+(`under below less than cheaper than between…and around/about/~`) are unchanged.
+
+| Input | Before | After |
+|---|---|---|
+| `up to 5 people` | `priceMax 5` | no price |
+| `up to 50` | 50 | `priceMax 50` (last token) |
+| `up to 50 nike shoes` | 50 | `priceMax 50` (vendor follows) |
+| `from $20 jackets` | 20 | `priceMin 20` (currency marker) |
+| `over 1500` | 1500 | `priceMin 1500` (last token) |
+| `from 2020 collection` | none | none (year, unchanged) |
+
 ## Tests
 
-Full sandbox suite: **Test Files 24 passed (24), Tests 208 passed | 6 skipped
-(214)** — up from 195 passed | 6 skipped. **+13**: 7 pure-parser cases in
-`phase6-units` (A1 block: thousands/`~`/`between`, reject-don't-truncate,
-year/count/unit guards, currency-overrides-year) and 6 engine cases in the new
-`phase6_1` file (A2 `"red"`→`"Red"`, draft-only value not applied, cross-shop
-isolation; A3 `negationIgnored` + warning; A4 NUL with `nl` on and off; and
-NL == manual-equivalent for products, total and facets). The 6 skips are the
-`prisma-integration` cases that self-skip in the egress-blocked sandbox and run
-on CI. `typecheck` 0 errors; `build` and `worker:build` OK.
+Full sandbox suite: **Test Files 24 passed (24), Tests 218 passed | 6 skipped
+(224)**. The journey: 195 (Phase 6) → **+13** (6.1) → **+10** (6.1b) = 218.
+- 6.1 added 7 pure (`phase6-units` A1) + 6 engine (`phase6_1` A2/A3/A4 + NL==manual).
+- 6.1b added 5 pure (`phase6-units`: B2 grouping; B3 last-token / follow-word /
+  unambiguous-not-gated) + 5 engine (`phase6_1` B1: three-casing tags + NL==manual,
+  two-casing metafield, two-casing vendor, draft-only casing not applied, cross-shop
+  no-leak).
 
-All 195 prior tests pass unchanged. The `phase6-units` fixture gained `tagValues`
-/ `metafieldValues` so its existing attribute assertions reflect the live-value
-resolution A2 adds — no assertion was changed or weakened.
+The 6 skips are the `prisma-integration` cases that self-skip in the
+egress-blocked sandbox and run on CI. `typecheck` 0 errors; `build` and
+`worker:build` OK. **All 208 prior tests pass unchanged** — the `phase6-units`
+fixture's `tagValues`/`metafieldValues` became `…: string[]` to match the
+all-casings `ParseContext`, with the same asserted outputs (no assertion changed
+or weakened).
 
 ## Known limitations / not tested / unsure
 
-- **No performance numbers** (Phase 14). A2 adds two small per-request context
-  queries (distinct live tag values + configured-metafield values) alongside the
+- **No performance numbers** (Phase 14). A2/B1 add small per-request context
+  queries (distinct live tag + configured-metafield values) alongside the
   existing vendor/type fetch.
 - Price parsing is English-first and rule-based; exotic phrasings outside the
   documented cues fall through to free text (safe).
-- Live-Prisma execution of the Phase 6/6.1 path runs on CI and self-skips in the
-  egress-blocked sandbox — honestly unverified here, verified on GitHub Actions.
+- B3's "recognised phrase" check matches the first following token against the
+  set of known vendor/type/attribute first-tokens — a lightweight heuristic, not
+  a full phrase parse.
+- Live-Prisma execution of the Phase 6/6.1/6.1b path runs on CI and self-skips in
+  the egress-blocked sandbox — honestly unverified here, verified on GitHub Actions.
 
 ## Next step
 
-Push these Phase 6.1 changes (fast-forward on `3b14ad2`) and run
+Push these changes (fast-forward on `583ea81`) and run
 `.github/workflows/live-prisma-check.yml`. It applies the existing migrations and
 runs the full non-skipped suite through the real Prisma engine. Send the run URL;
 the live results will confirm the sandbox pg-verification.
 
-STATUS: PHASE 6.1 IMPLEMENTED & PG-VERIFIED. LIVE-PRISMA CONFIRMATION PENDING.
+STATUS: PHASE 6.1b IMPLEMENTED & PG-VERIFIED. LIVE-PRISMA CONFIRMATION PENDING.
 PHASE 7 NOT STARTED. AWAITING LIVE-PRISMA RUN AND EXPLICIT USER APPROVAL.
