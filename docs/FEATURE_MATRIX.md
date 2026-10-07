@@ -133,11 +133,28 @@ New tenant tables (RLS enabled+forced, app_runtime grants): `search_vocabulary`,
 `search_synonym`, `search_stopword`, `search_redirect` (migration 0008).
 Benchmarks/performance remain **Phase 14** (no numbers claimed).
 
+## Phase 6 — Semantic Layer / NL Query Parser (Implemented; Prisma execution pg-verified)
+
+Third-party services: **none**. Scopes added: **none**. Extensions added:
+**none**. Rule-based + deterministic. See `docs/PHASE6.md`.
+
+| ID | Feature | Status | Class | Tests | Location |
+|---|---|---|---|---|---|
+| F6.1 | Intent extraction (price under/over/between/around + currency; availability; brand→vendor; type→product_type; attributes; sort cheapest/newest) | Implemented | FULLY | `phase6-units`, `phase6-nl` | `nlparse.ts` |
+| F6.2 | Per-shop attribute dictionary (term→facet) + English defaults + admin CRUD | Implemented | FULLY | `phase6-*` | `attributes.ts`, `app/routes/app.attributes.tsx`, migration 0009 |
+| F6.3 | Parsed intent → existing filters + plan; remaining = free text | Implemented | FULLY | `phase6-nl` | `storefront.ts` (`mergeRawFilters`, `runCore`) |
+| F6.4 | Transparency (`interpretedAs`), per-request `nl` disable + `ignore`, zero-result fallback (never worse than Phase 5) | Implemented | FULLY | `phase6-nl` | `storefront.ts`, `proxy.products.tsx`, `app.search.tsx` |
+| F6.5 | Safety (same validation; bounded input; deterministic; hostile-input tests; negation degrades safely) | Implemented | FULLY | `phase6-units`, `phase6-nl` | `nlparse.ts`, `filters.ts` |
+| F6.6 | Sort hints + `product.createdAt` capture → `created_at_shopify` in docInsertSql | Implemented | FULLY | `phase6-nl` | `query.ts`, `engine.ts`, migration 0009 |
+
+New tenant table (RLS enabled+forced, app_runtime grants): `search_attribute_term`
+(migration 0009). Negative filtering is intentionally unsupported (negation
+degrades safely). Benchmarks remain **Phase 14**.
+
 ## Later phases (Planned — preserved, not implemented)
 
 | ID | Area | Status | Phase | Notes / class |
 |---|---|---|---|---|
-| F6 | Semantic layer / natural-language parser | Planned | 6 | Rule-based only (no AI/embeddings/pgvector). |
 | F7 | Theme App Extension, mobile, URL state, a11y, Dawn + 2 themes, vintage investigation | Planned | 7 | Progressive enhancement; native search must survive app outage. |
 | F8 | Merchandising (pin/boost/demote/hide/banners/schedule) + A/B testing | Planned | 8 | FULLY. |
 | F9 | Recommendations (similar/related/FBT/trending/…); personalization | Planned | 9 | Own algorithms + PostgreSQL. `read_orders`/protected data = **Requires Verification**. |

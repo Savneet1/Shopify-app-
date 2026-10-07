@@ -21,14 +21,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
   const q = (url.searchParams.get("q") ?? "").slice(0, 200);
   const filters = filtersFromSearchParams(url.searchParams);
+  // NL on by default. The form posts a hidden "0" plus the checkbox "1" when
+  // checked, so "on" means the value "1" is present; first visit has neither.
+  const nlVals = url.searchParams.getAll("nl");
+  const nl = nlVals.length === 0 ? true : nlVals.includes("1");
   const hasInput = q.trim() !== "" || url.searchParams.toString() !== "";
-  if (!hasInput) return { q, result: null, error: null, metafieldKey: FACET_METAFIELD.key };
+  if (!hasInput) return { q, nl, result: null, error: null, metafieldKey: FACET_METAFIELD.key };
   try {
-    const result = await storefrontSearch(shopId, { q, limit: 24, filters });
-    return { q, result, error: null, metafieldKey: FACET_METAFIELD.key };
+    const result = await storefrontSearch(shopId, { q, limit: 24, filters, nl });
+    return { q, nl, result, error: null, metafieldKey: FACET_METAFIELD.key };
   } catch (err) {
     const error = err instanceof FilterValidationError ? err.message : "Search failed";
-    return { q, result: null, error, metafieldKey: FACET_METAFIELD.key };
+    return { q, nl, result: null, error, metafieldKey: FACET_METAFIELD.key };
   }
 };
 
@@ -39,7 +43,7 @@ function fieldFor(key: string, metafieldKey: string): string {
 }
 
 export default function SearchPlayground() {
-  const { q, result, error, metafieldKey } = useLoaderData<typeof loader>();
+  const { q, nl, result, error, metafieldKey } = useLoaderData<typeof loader>();
   const nav = useNavigation();
   const busy = nav.state !== "idle";
   const applied = result?.appliedFilters;
@@ -69,6 +73,11 @@ export default function SearchPlayground() {
             />
             <button type="submit" disabled={busy}>{busy ? "Searching…" : "Search"}</button>
           </div>
+          <label style={{ fontSize: 13, color: "#555", display: "block", marginBottom: 10 }}>
+            {/* Hidden "0" + checkbox: unchecked posts only the hidden 0; checked posts "on". */}
+            <input type="hidden" name="nl" value="0" />
+            <input type="checkbox" name="nl" value="1" defaultChecked={nl} /> Natural-language parsing
+          </label>
 
           {error && (
             <p style={{ background: "#fde8e8", padding: "0.6rem", borderRadius: 6 }}>⚠ {error}</p>
@@ -125,7 +134,28 @@ export default function SearchPlayground() {
                     {result.indexVersion != null ? `index v${result.indexVersion}` : "no index"} · {result.tookMs}ms
                     {result.fallback ? ` · fallback: ${result.fallback}` : ""}
                     {result.zeroResult ? " · zero-result" : ""}
+                    {result.sort && result.sort !== "relevance" ? ` · sort: ${result.sort}` : ""}
                   </p>
+
+                  {result.interpretedAs?.applied && (
+                    <div style={{ background: "#f3f0ff", padding: "0.6rem 0.75rem", borderRadius: 6, fontSize: 14 }}>
+                      <strong>Interpreted as</strong>
+                      {result.interpretedAs.fellBack && (
+                        <span style={{ color: "#a15c00" }}> — fell back to plain search (parsed query had no results)</span>
+                      )}
+                      <ul style={{ margin: "4px 0" }}>
+                        {result.interpretedAs.interpreted.map((it, i) => (
+                          <li key={i}><code>{it.kind}</code> “{it.text}” → {it.detail}</li>
+                        ))}
+                        {result.interpretedAs.negations.map((n, i) => (
+                          <li key={"n" + i} style={{ color: "#888" }}>negated (ignored): “{n}”</li>
+                        ))}
+                      </ul>
+                      <div style={{ color: "#666" }}>
+                        remaining free text: <code>{result.interpretedAs.remaining || "—"}</code>
+                      </div>
+                    </div>
+                  )}
 
                   {result.redirect && (
                     <p style={{ background: "#e5f0ff", padding: "0.75rem", borderRadius: 6 }}>

@@ -93,6 +93,8 @@ export function normalizeProductNode(node: any): NormalizedProduct {
       onlineStoreUrl: node.onlineStoreUrl ?? null,
       // Phase 4: configured-namespace metafields for the facet.
       metafields: toMetafields(node),
+      // Phase 6: Shopify creation timestamp for the "newest" sort hint.
+      productCreatedAt: node.createdAt ?? null,
       shopifyUpdatedAt: node.updatedAt ?? null,
     },
     variants,

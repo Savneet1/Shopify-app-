@@ -31,6 +31,8 @@ export interface ProductInput {
   onlineStoreUrl?: string | null;
   /** Flat { "namespace.key": value } map for the configured facet namespace. */
   metafields?: Record<string, string>;
+  /** Shopify product createdAt (Phase 6 "newest" sort). */
+  productCreatedAt?: string | Date | null;
   shopifyUpdatedAt?: string | Date | null;
 }
 
@@ -86,15 +88,16 @@ export async function upsertProduct(
     p.featuredImageAlt ?? null,
     p.onlineStoreUrl ?? null,
     JSON.stringify(p.metafields ?? {}),
+    toDate(p.productCreatedAt),
   ];
   const rows = await exec.rows<{ id: string }>(
     `INSERT INTO product
       (shop_id, shopify_product_gid, handle, title, description, vendor,
        product_type, status, tags, options, total_inventory, tracks_inventory,
        shopify_updated_at, featured_image_url, featured_image_alt, online_store_url,
-       metafields, updated_at, deleted_at)
+       metafields, product_created_at, updated_at, deleted_at)
      VALUES ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11::int,$12::boolean,$13::timestamptz,
-       $14,$15,$16,$17::jsonb, now(), NULL)
+       $14,$15,$16,$17::jsonb,$18::timestamptz, now(), NULL)
      ON CONFLICT (shop_id, shopify_product_gid) DO UPDATE SET
        handle=EXCLUDED.handle, title=EXCLUDED.title, description=EXCLUDED.description,
        vendor=EXCLUDED.vendor, product_type=EXCLUDED.product_type, status=EXCLUDED.status,
@@ -102,6 +105,7 @@ export async function upsertProduct(
        total_inventory=EXCLUDED.total_inventory, tracks_inventory=EXCLUDED.tracks_inventory,
        featured_image_url=EXCLUDED.featured_image_url, featured_image_alt=EXCLUDED.featured_image_alt,
        online_store_url=EXCLUDED.online_store_url, metafields=EXCLUDED.metafields,
+       product_created_at=COALESCE(EXCLUDED.product_created_at, product.product_created_at),
        shopify_updated_at=EXCLUDED.shopify_updated_at, updated_at=now(), deleted_at=NULL
      WHERE product.shopify_updated_at IS NULL
         OR EXCLUDED.shopify_updated_at IS NULL

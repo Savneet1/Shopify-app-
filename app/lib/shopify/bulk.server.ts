@@ -32,7 +32,7 @@ const METAFIELD_FIELDS = `metafields(namespace: ${JSON.stringify(FACET_METAFIELD
  */
 
 const PRODUCT_FIELDS = `
-  id title handle description vendor productType status tags updatedAt
+  id title handle description vendor productType status tags updatedAt createdAt
   totalInventory tracksInventory
   onlineStoreUrl
   featuredImage { url altText }

@@ -187,6 +187,31 @@ describe("Prisma-backed integration (production withShopExec path)", () => {
     expect(syn.products.map((p) => p.title)).toContain("Leather Couch");
   });
 
+  it("Phase 6 NL parsing (brand + price) via the production Prisma path", async (ctx) => {
+    if (!prismaOk) return ctx.skip();
+    const shopId = await resolveShopId("shop-a.myshopify.com");
+
+    await withShopExec(shopId, async (e) => {
+      for (const [n, title, price] of [["400", "Nike Trail Shoe", "45.00"], ["401", "Nike Road Shoe", "90.00"]] as const) {
+        const { id } = await upsertProduct(e, shopId, {
+          shopifyProductGid: `gid://shopify/Product/${n}`, title, vendor: "Nike", productType: "Shoe",
+          status: "ACTIVE", onlineStoreUrl: `https://shop.test/${n}`, productCreatedAt: "2024-05-01T00:00:00Z",
+        });
+        await upsertVariant(e, shopId, id, { shopifyVariantGid: `gid://shopify/ProductVariant/${n}1`, sku: `N-${n}`, price, availableForSale: true });
+      }
+    });
+    const v = await withShopExec(shopId, (e) => createIndexVersion(e, shopId, "full", 2));
+    await withShopExec(shopId, (e) => buildDocs(e, shopId, v.id));
+    await withShopExec(shopId, (e) => validateIndexVersion(e, shopId, v.id, 2));
+    await withShopExec(shopId, (e) => activateIndexVersion(e, shopId, v.id));
+
+    const r = await storefrontSearch(shopId, { q: "Nike under 60" });
+    expect(r.interpretedAs.applied).toBe(true);
+    expect(r.appliedFilters.vendor).toContain("Nike");
+    expect(r.appliedFilters.priceMax).toBe(60);
+    expect(r.products.map((p) => p.title)).toEqual(["Nike Trail Shoe"]); // 45 only
+  });
+
   it("claimWebhook + markWebhookProcessed via Prisma (idempotency)", async (ctx) => {
     if (!prismaOk) return ctx.skip();
     const shopId = await resolveShopId("shop-a.myshopify.com");

@@ -36,11 +36,18 @@ const STATEMENT_TIMEOUT_MS = Number(process.env.SEARCH_STATEMENT_TIMEOUT_MS || 3
 export type SearchStrategy =
   | "browse" | "exact_sku" | "exact" | "prefix" | "synonym" | "fuzzy" | "partial" | "none";
 
+export type SortOption = "relevance" | "price_asc" | "price_desc" | "newest";
+export const SORT_OPTIONS: readonly SortOption[] = ["relevance", "price_asc", "price_desc", "newest"];
+export function normalizeSort(v: unknown): SortOption {
+  return SORT_OPTIONS.includes(v as SortOption) ? (v as SortOption) : "relevance";
+}
+
 export interface SearchParams {
   q: string;
   limit?: number;
   offset?: number;
   filters?: RawFilters;
+  sort?: SortOption;
 }
 
 export interface Correction {
@@ -159,6 +166,7 @@ export async function runProducts(
   filters: SearchFilters,
   limit: number,
   offset: number,
+  sort: SortOption = "relevance",
 ): Promise<{ rows: ProductRow[] }> {
   const pb = new Params();
   const where = buildWhere(pb, shopId, versionId, filters, m);
@@ -195,11 +203,21 @@ export async function runProducts(
       + (CASE WHEN available THEN ${IN_STOCK_BOOST} ELSE 0 END)`;
   }
 
+  // Sort hints (Phase 6). Relevance (default) uses the rule-based score; the
+  // others are deterministic column orders with a stable product-id tie-break.
+  // NULLS LAST so missing price / createdAt never float to the top.
+  const orderBy =
+    sort === "price_asc" ? `b.price_min ASC NULLS LAST, b.pid ASC`
+    : sort === "price_desc" ? `b.price_max DESC NULLS LAST, b.pid ASC`
+    : sort === "newest" ? `b.created_at_shopify DESC NULLS LAST, b.pid ASC`
+    : `b.score DESC, b.title ASC, b.pid ASC`;
+
   const limP = pb.add(limit);
   const offP = pb.add(offset);
   const sql = `
     WITH base AS (
       SELECT product_id, shopify_product_gid AS gid, doc, title, available, product_id AS pid,
+             price_min, price_max, created_at_shopify,
              (${clsExpr}) AS cls,
              (${scoreExpr}) AS score
       FROM product_search_doc WHERE ${where}
@@ -207,7 +225,7 @@ export async function runProducts(
     SELECT b.product_id, b.gid, b.doc, b.cls, b.score,
            (SELECT count(*)::int FROM base) AS total
     FROM base b
-    ORDER BY b.score DESC, b.title ASC, b.pid ASC
+    ORDER BY ${orderBy}
     LIMIT ${limP}::int OFFSET ${offP}::int`;
   const rows = await exec.rows<ProductRow>(sql, pb.values);
   return { rows };
@@ -251,7 +269,7 @@ export async function searchWithExec(
     return { ...emptyBase, strategy: "none", indexVersion: active.version, tookMs: Date.now() - started, corrections, corrected: false };
   }
 
-  const { rows } = await runProducts(exec, shopId, active.id, planned, filters, limit, offset);
+  const { rows } = await runProducts(exec, shopId, active.id, planned, filters, limit, offset, normalizeSort(params.sort));
   const total = rows[0]?.total ?? 0;
   const topClass = rows[0]?.cls;
   const strategy = strategyOf(planned, topClass, total);
