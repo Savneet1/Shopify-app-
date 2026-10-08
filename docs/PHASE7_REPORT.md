@@ -226,3 +226,45 @@ not carry ports.
 STATUS: PHASE 7.1 IMPLEMENTED & SANDBOX-VERIFIED (253 passed | 7 skipped).
 LIVE-PRISMA + LIVE-STORE CONFIRMATION PENDING. PHASE 8 NOT STARTED. AWAITING LIVE
 RUN AND EXPLICIT USER APPROVAL.
+
+---
+
+# Phase 7.1b — single fix (built on `266cf84`)
+
+**G1 — `toSameSitePath` could return a protocol-relative path.** For an absolute
+URL on an allowed host the function returned `parsed.pathname + search + hash`
+without re-validating it. The parsed pathname can itself start with `//` (or the
+URL parser rewrites a backslash to a slash), so an allowed host could still yield
+an off-origin destination:
+- `https://www.mystore.com//evil.com/x` → `//evil.com/x`
+- `https://www.mystore.com/\evil.com/x` → `//evil.com/x`
+- `https://www.mystore.com/\/evil.com/x` → `///evil.com/x`
+
+**Fix:** after building the path from an absolute URL, run it through the same
+`safeRelative` check used for relative input (single leading `/` not followed by
+`/` or `\`, no control chars, no `/scheme:`); on failure return `null` so the
+caller falls back to the native link. The path is never "repaired" — real
+Shopify product paths never begin with `//`. One-line change in
+`extensions/search-discovery-theme/assets/boost-core.js`; the three probe inputs
+now return `null`, and all real-shaped fixtures (myshopify absolute, custom-
+domain absolute with `?variant=1#x`, uppercase host, trailing-dot host, port,
+relative, same-domain redirect) are still accepted.
+
+**Dead code removed.** The pre-7.1 `isSafeUrl` helper was unused after 7.1 (the
+glue uses `toSameSitePath` / `isSafeImageUrl`); it and its two tests were removed.
+
+## Tests vs 253
+
+Full suite: **254 passed | 7 skipped (261)**. Net change in `phase7-core`: **−2**
+(removed the dead `isSafeUrl` tests) **+3** (7.1b: the three path-escape inputs →
+`null`; the real-shaped fixtures still accepted; and an **invariant** test over
+40+ crafted inputs — the Phase 7.1 hostile set plus `//`, `/\`, `%2f%2f`,
+tab/newline, a Cyrillic look-alike host, userinfo, empty/whitespace/null —
+asserting every accepted output `o` satisfies
+`new URL(o, "https://www.mystore.com").origin === "https://www.mystore.com"`).
+No other test changed; no assertion weakened (the 2 removed tests covered removed
+code). `typecheck` 0; `build` OK; `worker:build` OK. No performance numbers.
+
+STATUS: PHASE 7.1b IMPLEMENTED & SANDBOX-VERIFIED (254 passed | 7 skipped).
+LIVE-PRISMA + LIVE-STORE CONFIRMATION PENDING. PHASE 8 NOT STARTED. AWAITING LIVE
+RUN AND EXPLICIT USER APPROVAL.

@@ -193,24 +193,6 @@
     return b + "/" + endpoint + (all ? "?" + all : "");
   }
 
-  /**
-   * isSafeUrl(url): true only for a SAME-SITE destination — a relative path that
-   * is not protocol-relative ("//evil.com") and has no scheme. Used to validate
-   * every product URL and the redirect destination from the API before the
-   * client navigates or renders an href. Never trusts API data.
-   */
-  function isSafeUrl(url) {
-    if (url == null) return false;
-    var u = String(url).trim();
-    if (u.length === 0) return false;
-    if (u.charAt(0) !== "/") return false;      // must be root-relative
-    if (u.charAt(1) === "/") return false;      // not protocol-relative //host
-    if (u.charAt(1) === "\\") return false;      // backslash trick
-    if (/[\u0000-\u001f]/.test(u)) return false; // control chars
-    if (/^\/[a-z][a-z0-9+.-]*:/i.test(u)) return false; // "/javascript:" etc.
-    return true;
-  }
-
   function normHost(h) {
     if (h == null) return "";
     return String(h).toLowerCase().replace(/\.$/, "").trim();
@@ -266,8 +248,14 @@
     var allow = (allowedHosts || []).map(normHost);
     var cur = normHost(currentHost);
     if (allow.indexOf(host) < 0 && !(cur && host === cur)) return null;
-    var path = parsed.pathname || "/";
-    return path + (parsed.search || "") + (parsed.hash || "");
+    // G1 (7.1b): the parsed pathname can still be protocol-relative —
+    // e.g. "https://allowed.com//evil.com/x" -> "//evil.com/x", and the URL
+    // parser turns a backslash into a slash ("...\evil.com" -> "//evil.com").
+    // Re-validate the built path with the SAME relative check; reject (fall
+    // back to the native link) rather than "repair" it. Real Shopify product
+    // paths never start with "//".
+    var path = (parsed.pathname || "/") + (parsed.search || "") + (parsed.hash || "");
+    return safeRelative(path) ? path : null;
   }
 
   /**
@@ -391,7 +379,6 @@
     parseState: parseState,
     serializeState: serializeState,
     buildProxyUrl: buildProxyUrl,
-    isSafeUrl: isSafeUrl,
     toSameSitePath: toSameSitePath,
     isSafeImageUrl: isSafeImageUrl,
     formatPrice: formatPrice,

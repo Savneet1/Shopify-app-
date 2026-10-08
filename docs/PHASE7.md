@@ -197,3 +197,17 @@ Host lists are passed from Liquid via the `json` filter
 - (ii) That Liquid's `json` filter output is safe inside the
   `type="application/json"` script block on a real theme (no premature `</script>`
   / breakout) — expected (the `json` filter escapes), confirm on a live theme.
+
+### 10.1 Phase 7.1b — no path-based origin escape (G1)
+
+`toSameSitePath` returns `pathname+search+hash` for an allowed absolute host, but
+the parsed pathname could itself be **protocol-relative** — e.g.
+`https://allowed.com//evil.com/x` → `//evil.com/x`, and the URL parser rewrites a
+backslash to a slash (`https://allowed.com/\evil.com` → `//evil.com`), so a
+browser would treat the result as another origin. 7.1b re-runs the built path
+through the same `safeRelative` check used for relative input and returns `null`
+on failure (the caller falls back to the native link) rather than "repairing" the
+path — real Shopify product paths never begin with `//`. An invariant test over
+40+ crafted inputs asserts every accepted output `o` satisfies
+`new URL(o, "https://www.mystore.com").origin === "https://www.mystore.com"`. The
+pre-7.1 `isSafeUrl` helper was dead after 7.1 and was removed with its tests.

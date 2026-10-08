@@ -110,18 +110,8 @@ describe("Phase 7 boost-core — buildProxyUrl", () => {
   });
 });
 
-describe("Phase 7 boost-core — isSafeUrl (same-site only)", () => {
-  it("accepts root-relative paths", () => {
-    expect(Core.isSafeUrl("/products/x")).toBe(true);
-    expect(Core.isSafeUrl("/a?b=1&c=2")).toBe(true);
-  });
-  it("rejects absolute, protocol-relative, scheme, and junk", () => {
-    for (const u of ["//evil.com", "https://evil.com", "http://x", "javascript:alert(1)",
-      "/javascript:alert(1)", "/\\evil.com", "", "  ", "mailto:x@y.z", "/\u0000x"]) {
-      expect(Core.isSafeUrl(u), u).toBe(false);
-    }
-  });
-});
+// NOTE (7.1b): the pre-7.1 `isSafeUrl` helper was dead code after 7.1 (the glue
+// uses toSameSitePath / isSafeImageUrl). It and its tests were removed in 7.1b.
 
 describe("Phase 7.1 boost-core — toSameSitePath (allowlist, fail-closed)", () => {
   const allow = ["shop.myshopify.com", "www.mystore.com"];
@@ -165,6 +155,91 @@ describe("Phase 7.1 boost-core — toSameSitePath (allowlist, fail-closed)", () 
       null as any,
     ]) {
       expect(Core.toSameSitePath(u, a, cur), String(u)).toBeNull();
+    }
+  });
+});
+
+describe("Phase 7.1b boost-core — toSameSitePath never escapes via the path (G1)", () => {
+  const allow = ["www.mystore.com", "shop.myshopify.com"];
+  const cur = "www.mystore.com";
+
+  it("rejects an allowed host whose path is protocol-relative / backslash-escaped", () => {
+    expect(Core.toSameSitePath("https://www.mystore.com//evil.com/x", allow, cur)).toBeNull();
+    expect(Core.toSameSitePath("https://www.mystore.com/\\evil.com/x", allow, cur)).toBeNull();
+    expect(Core.toSameSitePath("https://www.mystore.com/\\/evil.com/x", allow, cur)).toBeNull();
+  });
+
+  it("still accepts the real-shaped fixtures", () => {
+    expect(Core.toSameSitePath("https://shop.myshopify.com/products/red-shoe", allow, cur)).toBe("/products/red-shoe");
+    expect(Core.toSameSitePath("https://www.mystore.com/products/x?variant=1#x", allow, cur)).toBe("/products/x?variant=1#x");
+    expect(Core.toSameSitePath("HTTPS://WWW.MYSTORE.COM/P", allow, cur)).toBe("/P");
+    expect(Core.toSameSitePath("https://www.mystore.com./p", allow, cur)).toBe("/p");
+    expect(Core.toSameSitePath("https://www.mystore.com:443/p", allow, cur)).toBe("/p");
+    expect(Core.toSameSitePath("/products/red-shoe", allow, cur)).toBe("/products/red-shoe");
+    expect(Core.toSameSitePath("https://www.mystore.com/pages/sale", allow, cur)).toBe("/pages/sale");
+  });
+
+  it("INVARIANT: every accepted output stays on the current origin (40+ crafted inputs)", () => {
+    const BASE = "https://www.mystore.com";
+    const inputs: any[] = [
+      // G1 path-escape attempts
+      "https://www.mystore.com//evil.com/x",
+      "https://www.mystore.com/\\evil.com/x",
+      "https://www.mystore.com/\\/evil.com/x",
+      "https://www.mystore.com/\\\\evil.com",
+      "https://www.mystore.com/%5cevil.com",
+      "https://www.mystore.com/%2f%2fevil.com",
+      "https://www.mystore.com/\tx",
+      "https://www.mystore.com/\nx",
+      "https://www.mystore.com#frag",
+      "https://www.mystore.com",
+      "HTTPS://www.mystore.com//evil",
+      "https://www.mystore.com/javascript:x",
+      "https://www.mystore.com/products/a:b",
+      // Phase 7.1 hostile set
+      "https://evil.com/x",
+      "https://good.com@evil.com",
+      "https://www.mystore.com.evil.com/x",
+      "https://evilwww.mystore.com/x",
+      "//evil.com",
+      "/\\evil.com",
+      "javascript:alert(1)",
+      "data:text/html,x",
+      "vbscript:x",
+      "file:///etc/passwd",
+      "mailto:a@b.c",
+      "http://",
+      "ht!tp://x",
+      "https://exa%0a.com/x",
+      "https://user:pass@www.mystore.com/x",
+      "https://xn--80ak6aa92e.com/x",
+      // control / whitespace / unicode-lookalike
+      "/%0a/x",
+      "/\u0000x",
+      "\u0009https://www.mystore.com/x",
+      "https://www.myѕtore.com/x", // Cyrillic 'ѕ' lookalike
+      "",
+      "   ",
+      null,
+      undefined,
+      // legitimate same-site forms (should be accepted)
+      "/products/red",
+      "/a?b=1#c",
+      "https://www.mystore.com/x",
+      "https://shop.myshopify.com/x",
+      "https://WWW.MYSTORE.COM/x",
+      "https://www.mystore.com./x",
+      "https://www.mystore.com:8443/x",
+      "https://www.mystore.com/collections/all?filter.v=1#top",
+    ];
+    expect(inputs.length).toBeGreaterThanOrEqual(40);
+    for (const u of inputs) {
+      const r = Core.toSameSitePath(u, allow, cur);
+      expect(r === null || typeof r === "string", String(u)).toBe(true);
+      if (r !== null) {
+        const origin = new URL(r, BASE).origin;
+        expect(origin, `${String(u)} -> ${r}`).toBe(BASE);
+      }
     }
   });
 });
