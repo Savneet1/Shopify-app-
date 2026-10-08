@@ -144,3 +144,85 @@ URL; backend live results will confirm the sandbox verification.
 STATUS: PHASE 7 IMPLEMENTED & SANDBOX-VERIFIED. LIVE-PRISMA + LIVE-STORE
 CONFIRMATION PENDING. PHASE 8 NOT STARTED. AWAITING LIVE RUN AND EXPLICIT USER
 APPROVAL.
+
+---
+
+# Phase 7.1 — fix batch (built on `02c8f2f`)
+
+Four defects from independent review. Rule-based/deterministic; no new scope,
+dependency, extension, or migration.
+
+## F1 (blocker) — URL handling now matches real API data
+
+**Root cause:** the API's `product.url` is Shopify's **absolute**
+`onlineStoreUrl` and `image.url` is the **absolute CDN** `featuredImage.url`
+(see docs/PHASE7.md §10), but the Phase 7 `isSafeUrl` accepted only root-relative
+paths. On a real store that dropped every product from predictive, linked every
+result card to the native search page, rendered no images, and ignored absolute
+same-domain redirects.
+
+**Fix (fail-closed, allowlist — not a weakening):**
+- `boost-core.js` adds `toSameSitePath(url, allowedHosts, currentHost)`: relative
+  paths pass; an absolute `http(s)` URL is accepted only when its hostname
+  (lower-cased, trailing-dot stripped, **exact** match) is in `allowedHosts` or
+  equals `currentHost`, returning `pathname+search+hash` so the link stays on the
+  visitor's origin. Rejects userinfo, look-alike/added-label hosts, non-http(s)
+  schemes, protocol-relative, backslashes, encoded control chars, malformed URLs;
+  port is ignored in host matching. Uses the `URL` parser (browser + Node).
+- `isSafeImageUrl(url, allowedImageHosts)`: https-only, host-allowlisted; never
+  used for navigation.
+- Liquid passes `shop.permanent_domain` + `shop.domain` (allowedHosts), the same
+  plus `cdn.shopify.com` (imageHosts) via the `json` filter, into both config
+  blocks; `routes.search_url` fallback kept.
+- Wired into `boost-predictive.js` (product items + `choose()`) and
+  `boost-results.js` (card `href`, image `src`, redirect navigation); product
+  links use the returned relative path.
+
+## F2 — currency formatting
+
+`boost-core.js` adds pure `formatPrice(min, max, currency, locale)` using
+`Intl.NumberFormat` (style currency) inside try/catch with a plain-number
+fallback (invalid code / no Intl); `boost-results.js` uses it with
+`shop.currency` (Liquid) and `document.documentElement.lang`. Markets /
+multi-currency conversion stays **Phase 13** (noted here and in docs).
+
+## F3 — routing regression guard
+
+`test/phase7-routing.test.ts` (static, no engine): asserts every
+`app/routes/*.tsx` module is registered in `app/routes.ts` **exactly once** and
+that each registered path exists; asserts the `[app_proxy]` `prefix`/`subpath`
+form `/apps/search` (matching the extension's default `proxyBase` and the admin
+page's constants) and that the proxy `url` path has matching `proxy/*` routes
+registered. **Part 3** (an unsigned App Proxy request → HTTP 400): importing the
+proxy route pulls in the generated Prisma client, which is unavailable in the
+egress-blocked sandbox, so it lives in `test/prisma-integration.test.ts` and runs
+on **CI** (self-skips here) — **Requires Verification** until CI runs it.
+
+## F4 — docs
+
+`docs/PHASE7.md` §10 records the real data shapes and the allowlist model
+(replacing "same-origin only") and adds the two Requires-Verification items
+(primary vs myshopify domain in `onlineStoreUrl`; `json`-filter safety inside the
+`application/json` block on a live theme). This report section documents the fix.
+
+## Tests vs 242
+
+Full suite: **253 passed | 7 skipped (260)** — up from 242 passed | 6 skipped.
+**+11 passing** (6 in `phase7-core`: `toSameSitePath` accept/reject,
+`isSafeImageUrl`, `formatPrice`; 1 engine-level `phase7-url-engine` running real
+`storefrontSearchWithExec` over production-shaped absolute `onlineStoreUrl` + CDN
+`featuredImageUrl` and asserting every returned `url`/`image.url` passes the core
+validators; 4 in `phase7-routing`). **+1 skip** = the CI-only unsigned-proxy-400
+case. No prior assertion weakened. `typecheck` 0; `build` OK; `worker:build` OK.
+No performance numbers (Phase 14).
+
+## Port rule (stated)
+
+Host matching ignores the port. Rationale: navigation only ever uses the
+returned `pathname+search+hash` on the visitor's current origin, so a port in an
+allowed-host URL cannot redirect the visitor off-site; Shopify storefront URLs do
+not carry ports.
+
+STATUS: PHASE 7.1 IMPLEMENTED & SANDBOX-VERIFIED (253 passed | 7 skipped).
+LIVE-PRISMA + LIVE-STORE CONFIRMATION PENDING. PHASE 8 NOT STARTED. AWAITING LIVE
+RUN AND EXPLICIT USER APPROVAL.

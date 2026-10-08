@@ -222,4 +222,24 @@ describe("Prisma-backed integration (production withShopExec path)", () => {
     expect(first).toBe(true);
     expect(dup).toBe(false);
   });
+
+  // Phase 7.1 F3 part 3: an UNSIGNED App Proxy request must be rejected with
+  // HTTP 400 by authenticate.public.appProxy before any query runs. Importing
+  // the proxy route pulls in shopify.server -> the generated Prisma client, so
+  // this can only run where that client exists (CI); it skips in the
+  // egress-blocked sandbox. Requires Verification until CI runs it.
+  it("unsigned App Proxy request -> HTTP 400 (no tenant leak)", async (ctx) => {
+    if (!prismaOk) return ctx.skip();
+    const mod: any = await import("~/routes/proxy.products");
+    const req = new Request("https://app.example.com/proxy/products?q=red&shop=shop-a.myshopify.com");
+    let status = 0;
+    try {
+      const res: any = await mod.loader({ request: req, params: {}, context: {} });
+      status = res && typeof res.status === "number" ? res.status : 0;
+    } catch (e: any) {
+      if (e instanceof Response) status = e.status;
+      else throw e;
+    }
+    expect(status).toBe(400); // invalid/absent proxy signature
+  });
 });

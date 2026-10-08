@@ -159,3 +159,41 @@ configured (Phase 3); no new scope is introduced by Phase 7.
 | Merchant-customized proxy subpath path | Requires Verification |
 | In-admin block-activation detection via `app.extensions()` | Requires Verification |
 | No new scope required | Verified-in-docs + decision |
+
+## 10. Phase 7.1 — real data shapes & the URL allowlist model
+
+**Real payload shapes (recorded, confirmed against the engine's doc builder
+`app/lib/index/engine.ts`):**
+- `product.url` = Shopify's `onlineStoreUrl` — an **absolute** URL, e.g.
+  `https://shop.myshopify.com/products/red-shoe` or, on a custom-domain store,
+  `https://www.mystore.com/products/red-shoe`.
+- `product.image.url` = `featuredImage.url` — an **absolute CDN** URL, e.g.
+  `https://cdn.shopify.com/s/files/1/0001/0002/products/red.jpg?v=1700000000`.
+- `redirect` (Phase 5) may be an **absolute same-domain** URL.
+
+**Allowlist model (corrects the earlier "same-origin / root-relative only"
+description).** The storefront JS validates URLs fail-closed against an
+**allowlist of hostnames**, not a bare "same-origin" rule:
+- **Navigation** (`toSameSitePath`): a root-relative path passes; an absolute
+  `http(s)` URL is accepted only when its hostname (lower-cased, trailing-dot
+  stripped, **exact** match — no suffix matching) is in `allowedHosts`
+  (`shop.permanent_domain` + `shop.domain`) or equals the visitor's current
+  host, and it is rewritten to `pathname+search+hash` so navigation stays on the
+  visitor's origin. Rejected: other schemes, protocol-relative, userinfo
+  (`a@b`), added-label/look-alike hosts, encoded control chars, malformed URLs.
+  **Port is ignored** in host matching (navigation uses only the path, so a port
+  cannot send the visitor off-site).
+- **Images** (`isSafeImageUrl`): **https only**, hostname in
+  `allowedImageHosts` (`cdn.shopify.com` + the shop's domains). Never used for
+  navigation.
+Host lists are passed from Liquid via the `json` filter
+(`shop.permanent_domain`, `shop.domain`, `shop.currency`).
+
+**Added to Requires Verification:**
+- (i) Whether `onlineStoreUrl` uses the **primary (custom) domain** or the
+  **myshopify domain** on stores with a custom domain — the allowlist includes
+  **both** (`permanent_domain` + `domain`) so either works, but which one
+  Shopify emits is confirmable only on a real store.
+- (ii) That Liquid's `json` filter output is safe inside the
+  `type="application/json"` script block on a real theme (no premature `</script>`
+  / breakout) — expected (the `json` filter escapes), confirm on a live theme.

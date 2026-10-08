@@ -21,6 +21,7 @@
   {
     "inputSelector": {{ block.settings.input_selector | default: 'form[action*="/search"] input[name="q"]' | json }},
     "proxyBase": {{ '/' | append: prefix | append: '/' | append: subpath | json }},
+    "allowedHosts": [{{ shop.permanent_domain | json }}, {{ shop.domain | json }}],
     "timeoutMs": {{ block.settings.timeout_ms | default: 2000 | json }},
     "debounceMs": {{ block.settings.debounce_ms | default: 150 | json }},
     "labels": {

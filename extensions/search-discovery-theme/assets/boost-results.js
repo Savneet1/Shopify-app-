@@ -206,11 +206,9 @@
     }
 
     // ---- grid ----
+    var locale = (document.documentElement && document.documentElement.lang) || undefined;
     function money(p) {
-      if (p.priceMin == null) return "";
-      var s = String(p.priceMin);
-      if (p.priceMax != null && p.priceMax !== p.priceMin) s += "–" + p.priceMax;
-      return s;
+      return Core.formatPrice(p.priceMin, p.priceMax, cfg.currency, locale);
     }
     function renderGrid(data) {
       clear(grid);
@@ -218,11 +216,14 @@
       products.forEach(function (p) {
         var li = el("li", "boost-card");
         var a = el("a", "boost-card__link");
-        a.href = Core.isSafeUrl(p.url) ? p.url : nativeSearchHref();
-        if (p.image && Core.isSafeUrl(p.image.url)) {
+        // Absolute onlineStoreUrl -> same-site relative path (allowlist); fall
+        // back to the native search page only if the URL is not allowed.
+        var path = Core.toSameSitePath(p.url, cfg.allowedHosts, window.location.hostname);
+        a.href = path || nativeSearchHref();
+        if (p.image && Core.isSafeImageUrl(p.image.url, cfg.imageHosts)) {
           var img = document.createElement("img");
           img.className = "boost-card__img";
-          img.src = p.image.url; // same-site validated
+          img.src = p.image.url; // absolute CDN URL, host-allowlisted
           img.alt = p.image.alt || p.title || "";
           img.loading = "lazy";
           a.appendChild(img);
@@ -308,8 +309,13 @@
           if (myReq !== inflight) return; // a newer request superseded this one
           if (data && data.__fb) { fallback(); return; }
           if (Core.decideFallback({ body: data })) { fallback(); return; }
-          // Redirect: navigate only to a validated same-site destination.
-          if (data.redirect && Core.isSafeUrl(data.redirect)) { window.location.assign(data.redirect); return; }
+          // Redirect: navigate only to a validated same-site destination
+          // (Phase 5 may return an absolute same-domain URL -> converted to a
+          // relative path so it stays on the visitor's origin).
+          if (data.redirect) {
+            var rpath = Core.toSameSitePath(data.redirect, cfg.allowedHosts, window.location.hostname);
+            if (rpath) { window.location.assign(rpath); return; }
+          }
           renderInterpreted(data);
           renderFacets(data);
           renderToolbar(data);

@@ -33,6 +33,9 @@
   {
     "proxyBase": {{ '/' | append: prefix | append: '/' | append: subpath | json }},
     "searchUrl": {{ routes.search_url | default: '/search' | json }},
+    "allowedHosts": [{{ shop.permanent_domain | json }}, {{ shop.domain | json }}],
+    "imageHosts": ["cdn.shopify.com", {{ shop.permanent_domain | json }}, {{ shop.domain | json }}],
+    "currency": {{ shop.currency | json }},
     "perPage": {{ block.settings.per_page | default: 24 | json }},
     "nlEnabled": {{ block.settings.nl_enabled | default: true | json }},
     "metafieldKey": {{ block.settings.metafield_key | default: 'material' | json }},

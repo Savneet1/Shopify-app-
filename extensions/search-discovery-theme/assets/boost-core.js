@@ -211,6 +211,110 @@
     return true;
   }
 
+  function normHost(h) {
+    if (h == null) return "";
+    return String(h).toLowerCase().replace(/\.$/, "").trim();
+  }
+
+  // A root-relative path that is safe to use as-is (shared by path + image
+  // checks). Rejects protocol-relative, backslash, raw + encoded control chars
+  // and "/scheme:" tricks.
+  function safeRelative(u) {
+    if (u.charAt(0) !== "/") return false;
+    if (u.charAt(1) === "/") return false;   // //host
+    if (u.charAt(1) === "\\") return false;   // /\host
+    if (/[\u0000-\u001f]/.test(u)) return false;
+    if (/%0[9ad]/i.test(u)) return false;     // encoded TAB/LF/CR
+    if (/^\/[a-z][a-z0-9+.-]*:/i.test(u)) return false; // "/javascript:"
+    return true;
+  }
+
+  function parseUrl(u) {
+    try {
+      if (typeof URL === "function") return new URL(u);
+    } catch (e) { return null; }
+    return null;
+  }
+
+  /**
+   * toSameSitePath(url, allowedHosts, currentHost): FAIL-CLOSED allowlist
+   * validation that returns a root-relative path to navigate to, or null.
+   *
+   * The real API returns ABSOLUTE urls (Shopify onlineStoreUrl, e.g.
+   * https://shop.myshopify.com/products/x or https://www.store.com/products/x).
+   * A root-relative path passes through. An absolute http(s) URL is accepted
+   * ONLY when its hostname (lower-cased, trailing dot stripped) is in
+   * `allowedHosts` or equals `currentHost`; it then returns pathname+search+hash
+   * so navigation stays on the visitor's current origin. Everything else — other
+   * schemes, protocol-relative, userinfo, look-alike/added-label hosts, encoded
+   * control chars, malformed URLs — returns null. Port is IGNORED in host
+   * matching (navigation uses only the path, so a port cannot send the visitor
+   * off-site).
+   */
+  function toSameSitePath(url, allowedHosts, currentHost) {
+    if (url == null) return null;
+    var u = String(url).trim();
+    if (u.length === 0) return null;
+    if (u.charAt(0) === "/") return safeRelative(u) ? u : null; // relative
+    var parsed = parseUrl(u);
+    if (!parsed) return null;
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    if (parsed.username || parsed.password) return null; // userinfo (a@b trick)
+    if (parsed.hostname.indexOf("%") >= 0) return null;  // encoded host chars
+    if (/[\u0000-\u001f]/.test(u) || /%0[9ad]/i.test(u.split("/").slice(0, 3).join("/"))) return null;
+    var host = normHost(parsed.hostname);
+    var allow = (allowedHosts || []).map(normHost);
+    var cur = normHost(currentHost);
+    if (allow.indexOf(host) < 0 && !(cur && host === cur)) return null;
+    var path = parsed.pathname || "/";
+    return path + (parsed.search || "") + (parsed.hash || "");
+  }
+
+  /**
+   * isSafeImageUrl(url, allowedImageHosts): boolean. An image src — NEVER used
+   * for navigation. A root-relative path passes. An absolute URL must be https
+   * (not http) and its hostname must be in `allowedImageHosts` (e.g.
+   * cdn.shopify.com plus the shop's own domains). Returns the as-is URL's
+   * safety; the caller uses the original URL when true.
+   */
+  function isSafeImageUrl(url, allowedImageHosts) {
+    if (url == null) return false;
+    var u = String(url).trim();
+    if (u.length === 0) return false;
+    if (u.charAt(0) === "/") return safeRelative(u);
+    var parsed = parseUrl(u);
+    if (!parsed) return false;
+    if (parsed.protocol !== "https:") return false; // images: https only
+    if (parsed.username || parsed.password) return false;
+    if (parsed.hostname.indexOf("%") >= 0) return false;
+    var host = normHost(parsed.hostname);
+    return (allowedImageHosts || []).map(normHost).indexOf(host) >= 0;
+  }
+
+  /**
+   * formatPrice(min, max, currency, locale): a display price string. Uses
+   * Intl.NumberFormat (style currency) when a currency is given, inside
+   * try/catch with a plain-number fallback (invalid currency code / no Intl).
+   * Range when max differs from min; single value otherwise; "" when there is
+   * no price. (Markets / multi-currency conversion is Phase 13 — this only
+   * formats the shop's own currency.)
+   */
+  function formatPrice(min, max, currency, locale) {
+    var lo = (min == null || min === "") ? null : Number(min);
+    var hi = (max == null || max === "") ? null : Number(max);
+    if (lo == null || !isFinite(lo)) return "";
+    var fmt = function (n) {
+      if (currency) {
+        try {
+          return new Intl.NumberFormat(locale || undefined, { style: "currency", currency: currency }).format(n);
+        } catch (e) { /* invalid code / no Intl → fall through */ }
+      }
+      return String(n);
+    };
+    if (hi != null && isFinite(hi) && hi !== lo) return fmt(lo) + "–" + fmt(hi);
+    return fmt(lo);
+  }
+
   /**
    * decideFallback({timedOut, httpError, body}): the single rule for when the
    * enhancement must defer to the theme's native search. True on timeout, on a
@@ -288,6 +392,9 @@
     serializeState: serializeState,
     buildProxyUrl: buildProxyUrl,
     isSafeUrl: isSafeUrl,
+    toSameSitePath: toSameSitePath,
+    isSafeImageUrl: isSafeImageUrl,
+    formatPrice: formatPrice,
     decideFallback: decideFallback,
     comboboxKey: comboboxKey,
     makeDebouncer: makeDebouncer,

@@ -123,6 +123,81 @@ describe("Phase 7 boost-core — isSafeUrl (same-site only)", () => {
   });
 });
 
+describe("Phase 7.1 boost-core — toSameSitePath (allowlist, fail-closed)", () => {
+  const allow = ["shop.myshopify.com", "www.mystore.com"];
+  const cur = "www.mystore.com";
+
+  it("accepts real-shaped URLs and returns a same-site relative path", () => {
+    expect(Core.toSameSitePath("/products/red-shoe", allow, cur)).toBe("/products/red-shoe");
+    // absolute myshopify onlineStoreUrl
+    expect(Core.toSameSitePath("https://shop.myshopify.com/products/red-shoe?v=1", allow, cur)).toBe("/products/red-shoe?v=1");
+    // absolute custom-domain onlineStoreUrl
+    expect(Core.toSameSitePath("https://www.mystore.com/products/x", allow, cur)).toBe("/products/x");
+    // absolute same-domain redirect destination (Phase 5) converts to relative
+    expect(Core.toSameSitePath("https://www.mystore.com/pages/sale", allow, cur)).toBe("/pages/sale");
+    // uppercase scheme + host accepted (host matched case-insensitively)
+    expect(Core.toSameSitePath("HTTPS://SHOP.MYSHOPIFY.COM/Products/X", allow, cur)).toBe("/Products/X");
+    // trailing-dot host + port both tolerated (port ignored in host match)
+    expect(Core.toSameSitePath("https://shop.myshopify.com./products/x", allow, cur)).toBe("/products/x");
+    expect(Core.toSameSitePath("https://shop.myshopify.com:443/products/x", allow, cur)).toBe("/products/x");
+    // currentHost match even when not in the allowlist
+    expect(Core.toSameSitePath("https://www.mystore.com/x", [], cur)).toBe("/x");
+  });
+
+  it("rejects every hostile URL (returns null)", () => {
+    const a = ["good.com", "shop.myshopify.com"];
+    for (const u of [
+      "https://evil.com/x",
+      "https://good.com@evil.com",       // userinfo trick
+      "https://good.com.evil.com/x",     // added-label look-alike
+      "https://evilgood.com/x",          // prefix look-alike
+      "//evil.com",                       // protocol-relative
+      "javascript:alert(1)",
+      "data:text/html,x",
+      "vbscript:x",
+      "file:///etc/passwd",
+      "/\\evil.com",                      // backslash
+      "/%0a/x",                           // encoded control in relative
+      "https://exa%0a.com/x",            // encoded control in host
+      "http://",                           // malformed
+      "",
+      "   ",
+      null as any,
+    ]) {
+      expect(Core.toSameSitePath(u, a, cur), String(u)).toBeNull();
+    }
+  });
+});
+
+describe("Phase 7.1 boost-core — isSafeImageUrl (https + host allowlist)", () => {
+  const imgHosts = ["cdn.shopify.com", "www.mystore.com"];
+  it("accepts a CDN https image (with ?v=) and root-relative, case-insensitively", () => {
+    expect(Core.isSafeImageUrl("https://cdn.shopify.com/s/files/1/0001/0002/products/red.jpg?v=1700000000", imgHosts)).toBe(true);
+    expect(Core.isSafeImageUrl("/cdn/shop/products/x.jpg", imgHosts)).toBe(true);
+    expect(Core.isSafeImageUrl("HTTPS://CDN.SHOPIFY.COM/x.jpg", imgHosts)).toBe(true);
+  });
+  it("rejects http, foreign hosts, protocol-relative, schemes, empty", () => {
+    for (const u of ["http://cdn.shopify.com/x.jpg", "https://evil.com/x.jpg",
+      "//cdn.shopify.com/x.jpg", "javascript:x", "", null as any]) {
+      expect(Core.isSafeImageUrl(u, imgHosts), String(u)).toBe(false);
+    }
+  });
+});
+
+describe("Phase 7.1 boost-core — formatPrice", () => {
+  it("formats single, range, and equal min/max with currency", () => {
+    expect(Core.formatPrice("50", "80", "USD", "en-US")).toBe("$50.00–$80.00");
+    expect(Core.formatPrice("50", null, "USD", "en-US")).toBe("$50.00");
+    expect(Core.formatPrice("50", "50", "USD", "en-US")).toBe("$50.00"); // equal → single
+  });
+  it("falls back to plain numbers on missing/invalid currency, and empty on no price", () => {
+    expect(Core.formatPrice("50", "80", null, undefined)).toBe("50–80");
+    expect(Core.formatPrice("50", null, "US", "en-US")).toBe("50"); // invalid code → plain
+    expect(Core.formatPrice(null, null, "USD", "en-US")).toBe("");
+    expect(Core.formatPrice("", "", "USD", "en-US")).toBe("");
+  });
+});
+
 describe("Phase 7 boost-core — decideFallback", () => {
   it("falls back on timeout, http error, missing body, or native flag", () => {
     expect(Core.decideFallback({ timedOut: true })).toBe(true);

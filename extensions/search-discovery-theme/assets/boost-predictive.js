@@ -98,8 +98,11 @@
       var suggestions = (data && Array.isArray(data.suggestions)) ? data.suggestions : [];
       var count = 0;
       products.forEach(function (p) {
-        if (!Core.isSafeUrl(p.url)) return; // drop any non-same-site URL
-        items.push({ type: "product", title: p.title || "", url: p.url });
+        // Real API url is Shopify's absolute onlineStoreUrl; convert to a
+        // same-site relative path via the allowlist (fail-closed).
+        var path = Core.toSameSitePath(p.url, cfg.allowedHosts, window.location.hostname);
+        if (!path) return; // drop any non-allowed URL
+        items.push({ type: "product", title: p.title || "", url: path });
       });
       suggestions.forEach(function (s) {
         items.push({ type: "suggestion", title: (s && s.text) || "", url: null });
@@ -128,8 +131,8 @@
     function choose(i) {
       var it = items[i];
       if (!it) return;
-      if (it.type === "product" && Core.isSafeUrl(it.url)) {
-        window.location.assign(it.url);
+      if (it.type === "product" && it.url) {
+        window.location.assign(it.url); // already a validated same-site path
       } else {
         input.value = it.title;
         submitNative();
