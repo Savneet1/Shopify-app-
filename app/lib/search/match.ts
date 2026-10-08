@@ -8,6 +8,7 @@ import {
 } from "./filters";
 import { type QueryPlan, andLex, prefixLex, orLex, fuzzyLex } from "./rewrite";
 import { toTsQuery } from "./ranking";
+import type { MerchPlan } from "~/lib/merch/rules";
 
 /**
  * Effective match predicate for a planned query (Phase 5). Built with a Params
@@ -28,6 +29,10 @@ export type PlanLevel = "browse" | "primary" | "partial";
 export interface PlannedMatch {
   plan: QueryPlan;
   level: PlanLevel;
+  /** Phase 8: merchandising. Only `hideIds` is consumed by buildWhere (the hard
+   * exclusion shared by products, totals, facets, predictive, suggest). Pins and
+   * boost/demote are consumed by runProducts (relevance ordering). */
+  merch?: MerchPlan;
 }
 
 /** Whole-token exact SKU/barcode probe on the raw query. */
@@ -68,5 +73,11 @@ export function buildWhere(
   for (const p of filterPredicates(pb, filters, exclude)) parts.push(p);
   const tp = textPredicate(pb, m);
   if (tp) parts.push(tp);
+  // Phase 8 hide: a hard WHERE exclusion (like publication/draft) so hidden
+  // products never appear in results, totals, facets, predictive or suggest.
+  // Only added when there is something to hide → the no-rules SQL is unchanged.
+  if (m.merch && m.merch.hideIds.length > 0) {
+    parts.push(`product_id <> ALL(${pb.add(m.merch.hideIds)}::uuid[])`);
+  }
   return parts.join(" AND ");
 }

@@ -207,12 +207,31 @@ plus the new `app.storefront` page — wiring only, no new feature/scope. DOM,
 live-store, live-theme and deep-link behaviors are **Requires Verification**.
 Benchmarks remain **Phase 14**.
 
+## Phase 8 — Merchandising + A/B testing (Implemented; Prisma execution pg-verified)
+
+Third-party services / scopes / deps / extensions added: **none**. Migration
+`0010_phase8_merchandising` (5 tenant tables, RLS enabled+forced). Applied inside
+the one query planner. Docs: `docs/PHASE8.md`, report `docs/PHASE8_REPORT.md`.
+
+| ID | Feature | Status | Class | Tests | Location |
+|---|---|---|---|---|---|
+| F8.1 | Rules pin/boost/demote/hide; scope query_exact/contains/collection/global; priority + conflict resolution (hide>pin>boost>demote, then priority, then id); caps; pins stable across pagination; boost/demote bounded (≤90, never crosses match class); hide = hard WHERE; relevance-only for pin/boost/demote | Implemented | FULLY | `phase8-merch`, `phase8-units` | `app/lib/merch/rules.ts`, `match.ts`, `query.ts`, migration 0010 |
+| F8.2 | Scheduling: start/end (UTC + IANA tz for display), SQL active-window with a single `now`, start-inclusive/end-exclusive | Implemented | FULLY | `phase8-merch` (injected clock) | `rules.ts`, migration 0010 |
+| F8.3 | Banners (per query/collection, scheduled); allowlisted https image + same-site link + bounded text; payload + storefront render (textContent) + toggle | Implemented | FULLY (logic) / RV (live theme) | `phase8-merch`, `phase8-units` | `app/lib/merch/banners.ts`, `storefront.ts`, extension |
+| F8.4 | Admin CRUD (rules/banners/experiments) + schedule editor + "why is this here?" in the playground + exposure report; routes registered + routing-guard-covered | Implemented | FULLY | routing guard | `app/routes/app.merch.tsx`, `app.banners.tsx`, `app.experiments.tsx`, `app.search.tsx` |
+| F8.5 | A/B: experiments (draft/running/stopped), split, 2 variants = rule sets ± bounded weight override; deterministic hash assignment; no token=control; aggregate exposure/click only; stop restores default; no significance | Implemented | FULLY (assignment+exposure) / RV (consent) | `phase8-units`, `phase8-merch` | `app/lib/merch/assign.ts`, `experiments.ts`, `proxy.merch-event.tsx`, extension |
+| F8.6 | Invariants: results==facets under hide, RLS + cross-shop isolation, hostile inputs, determinism, no-rules baseline == Phase 6.1b | Implemented | FULLY | `phase8-merch` | — |
+
+Consent gating (Shopify customer-privacy API), live beacons, deep-link flows and
+conversion/revenue/significance (Phase 11) are **Requires Verification**.
+Benchmarks remain **Phase 14**.
+
 ## Later phases (Planned — preserved, not implemented)
 
 | ID | Area | Status | Phase | Notes / class |
 |---|---|---|---|---|
 | F7 | Theme App Extension, mobile, URL state, a11y, Dawn + 2 themes, vintage investigation | **Implemented** | 7 | See the Phase 7 section above. Progressive enhancement; native search survives app outage. Live store/theme = Requires Verification. |
-| F8 | Merchandising (pin/boost/demote/hide/banners/schedule) + A/B testing | Planned | 8 | FULLY. |
+| F8 | Merchandising (pin/boost/demote/hide/banners/schedule) + A/B testing | **Implemented** | 8 | See the Phase 8 section above. Inside the one planner; aggregate-only A/B; consent gating = Requires Verification. |
 | F9 | Recommendations (similar/related/FBT/trending/…); personalization | Planned | 9 | Own algorithms + PostgreSQL. `read_orders`/protected data = **Requires Verification**. |
 | F10 | Bundles | Planned | 10 | Certain bundle discounts require **Shopify Functions** — Requires Verification. |
 | F11 | Analytics (partitioned `analytics_event`, typed views, CSV), Web Pixel, attribution | Planned | 11 | No IP storage; Web Pixel sandbox/consent = Requires Verification. |

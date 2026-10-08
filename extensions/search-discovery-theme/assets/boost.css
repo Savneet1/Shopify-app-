@@ -25,6 +25,14 @@
 
 /* --- results layout --- */
 .boost-results__layout { display: block; }
+.boost-banners { display: grid; gap: 10px; margin: 10px 0; }
+.boost-banner { border: 1px solid var(--boost-border, #d0d0d0); border-radius: 10px; overflow: hidden; background: var(--boost-accent-bg, #eef1ff); }
+.boost-banner__link { display: block; text-decoration: none; color: inherit; }
+.boost-banner__inner { display: flex; gap: 12px; align-items: center; padding: 12px 14px; }
+.boost-banner__img { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; flex: 0 0 auto; }
+.boost-banner__title { font-weight: 700; }
+.boost-banner__body { color: var(--boost-muted, #555); font-size: 14px; }
+
 .boost-results__notice {
   padding: 12px 14px; border: 1px solid var(--boost-border, #d0d0d0);
   border-radius: 8px; background: var(--boost-warn-bg, #fff7e6); margin: 10px 0;

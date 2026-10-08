@@ -41,11 +41,14 @@ export async function catalogSuggestionsWithExec(
   shopId: string,
   prefix: string,
   limit = SUGGEST_MAX,
+  opts?: { hideIds?: string[] },
 ): Promise<Suggestion[]> {
   const active = await getActiveVersion(exec, shopId);
   if (!active) return [];
   const q = prefix.trim();
   if (q.length === 0) return [];
+  // Phase 8: merchandising-hidden products contribute no suggestion terms.
+  const hideIds = opts?.hideIds ?? [];
 
   // Accent-folded, case-insensitive prefix match. `%` / `_` in user input are
   // escaped so they cannot act as LIKE wildcards; the trailing `%` we add is the
@@ -61,6 +64,7 @@ export async function catalogSuggestionsWithExec(
       SELECT doc, title FROM product_search_doc
       WHERE shop_id=$1::uuid AND index_version_id=$2::uuid
         AND published = true AND status = 'ACTIVE'
+        AND product_id <> ALL($4::uuid[])
     ),
     terms AS (
       SELECT title AS text, 'title'::text AS type FROM visible WHERE title IS NOT NULL
@@ -77,7 +81,7 @@ export async function catalogSuggestionsWithExec(
     WHERE text <> '' AND immutable_unaccent(lower(text)) LIKE immutable_unaccent(lower($3)) ESCAPE '\\'
     GROUP BY text, type
     `,
-    [shopId, active.id, like],
+    [shopId, active.id, like, hideIds],
   );
 
   // Deduplicate by lowercased text (keep the best-weighted field), then sort by

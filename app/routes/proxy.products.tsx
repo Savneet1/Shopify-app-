@@ -33,6 +33,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) =>
       sort: sp.get("sort") != null ? normalizeSort(sp.get("sort")) : undefined,
       nl,
       ignore,
+      visitorToken: sp.get("abt"), // Phase 8: anonymous A/B token (no PII)
     });
   });
 

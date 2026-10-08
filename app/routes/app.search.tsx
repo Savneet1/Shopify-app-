@@ -199,10 +199,19 @@ export default function SearchPlayground() {
                               {p.available ? "" : " · out of stock"}
                             </div>
                           </div>
-                          {/* Ranking explanation: why this product ranked here. */}
-                          <div style={{ textAlign: "right", fontSize: 12, color: "#888", minWidth: 90 }}>
+                          {/* Ranking + merchandising explanation: why this product is here. */}
+                          <div style={{ textAlign: "right", fontSize: 12, color: "#888", minWidth: 120 }}>
                             <div>match: <code>{p.matchClass ?? "—"}</code></div>
                             <div>score: {p.score != null ? p.score.toFixed(1) : "—"}</div>
+                            {(() => {
+                              const a = result.merchandising?.annotations?.[p.id];
+                              if (!a) return null;
+                              const label = a.action === "pin" ? `pinned #${a.position}`
+                                : a.action === "boost" ? `boosted +${a.delta}`
+                                : a.action === "demote" ? `demoted ${a.delta}`
+                                : a.action;
+                              return <div style={{ color: "#1a56db" }} title={`rule ${a.ruleId}`}>{label}</div>;
+                            })()}
                           </div>
                         </li>
                       ))}

@@ -8,6 +8,7 @@ import {
   normalizeFilters,
 } from "./filters";
 import { buildWhere, skuHitPredicate, type PlannedMatch, type PlanLevel } from "./match";
+import type { MerchPlan } from "~/lib/merch/rules";
 import { buildPlan, andLex, prefixLex, orLex, fuzzyLex, type QueryPlan } from "./rewrite";
 import { stripControl } from "./text";
 import {
@@ -49,6 +50,9 @@ export interface SearchParams {
   offset?: number;
   filters?: RawFilters;
   sort?: SortOption;
+  /** Phase 8 merchandising plan (hide/pin/boost/demote). Threaded into the one
+   * planner so results, totals and facets stay consistent. */
+  merch?: MerchPlan;
 }
 
 export interface Correction {
@@ -129,10 +133,13 @@ export async function resolvePlanned(
   versionId: string,
   plan: QueryPlan,
   filters: SearchFilters,
+  merch?: MerchPlan,
 ): Promise<PlannedMatch | null> {
-  if (plan.isEmpty) return { plan, level: "browse" };
+  // merch is attached so the probe, products, and facets all share the hide
+  // exclusion (via buildWhere) — one PlannedMatch, no drift.
+  if (plan.isEmpty) return { plan, level: "browse", merch };
   for (const level of ["primary", "partial"] as PlanLevel[]) {
-    const m: PlannedMatch = { plan, level };
+    const m: PlannedMatch = { plan, level, merch };
     const pb = new Params();
     const where = buildWhere(pb, shopId, versionId, filters, m);
     const rows = await exec.rows(`SELECT 1 FROM product_search_doc WHERE ${where} LIMIT 1`, pb.values);
@@ -178,6 +185,7 @@ export async function runProducts(
   // Per-row match-class flags + rule-based score.
   let clsExpr = `'browse'::text`;
   let scoreExpr = `0::float8`;
+  let clsRankExpr = `0`; // the class weight alone (Phase 8: dominant key so boosts stay within class)
   if (hasTokens) {
     const sku = skuHitPredicate(pb, plan.raw);
     const exactQ = `tsv @@ ${toTsQuery(pb.add(andLex(plan.keptTokens)))}`;
@@ -203,16 +211,34 @@ export async function runProducts(
       ELSE ${CLASS_WEIGHT.partial} END`;
     scoreExpr = `(${classWeight}) + (${fieldScoreSql(rankQ)} * ${FIELD_SCALE})
       + (CASE WHEN available THEN ${IN_STOCK_BOOST} ELSE 0 END)`;
+    clsRankExpr = `(${classWeight})`;
   }
 
-  // Sort hints (Phase 6). Relevance (default) uses the rule-based score; the
-  // others are deterministic column orders with a stable product-id tie-break.
-  // NULLS LAST so missing price / createdAt never float to the top.
-  const orderBy =
-    sort === "price_asc" ? `b.price_min ASC NULLS LAST, b.pid ASC`
-    : sort === "price_desc" ? `b.price_max DESC NULLS LAST, b.pid ASC`
-    : sort === "newest" ? `b.created_at_shopify DESC NULLS LAST, b.pid ASC`
-    : `b.score DESC, b.title ASC, b.pid ASC`;
+  // Phase 8: pins + boost/demote apply to the RELEVANCE sort only, and only when
+  // there is something to apply — so price/newest sorts and the no-rules path
+  // are byte-identical to Phase 6.1b. Hide already applied via buildWhere.
+  const merch = m.merch;
+  const rankingMerch =
+    sort === "relevance" && !!merch && (merch.pinIds.length > 0 || merch.deltaIds.length > 0);
+
+  let merchCols = "";
+  let orderBy: string;
+  if (sort === "price_asc") orderBy = `b.price_min ASC NULLS LAST, b.pid ASC`;
+  else if (sort === "price_desc") orderBy = `b.price_max DESC NULLS LAST, b.pid ASC`;
+  else if (sort === "newest") orderBy = `b.created_at_shopify DESC NULLS LAST, b.pid ASC`;
+  else if (rankingMerch) {
+    const pinArr = pb.add(merch!.pinIds);
+    const dIds = pb.add(merch!.deltaIds);
+    const dVals = pb.add(merch!.deltaVals);
+    merchCols = `,
+             array_position(${pinArr}::uuid[], product_id) AS pin_pos,
+             COALESCE((${dVals}::float8[])[array_position(${dIds}::uuid[], product_id)], 0)::float8 AS merch_delta,
+             (${clsRankExpr}) AS cls_rank`;
+    // Pins first (stable global key → stable across pagination), then match
+    // class (so a boost can never cross a class, e.g. outrank exact-SKU), then
+    // the bounded (score + delta), then the Phase 5 tie-break.
+    orderBy = `b.pin_pos ASC NULLS LAST, b.cls_rank DESC, (b.score + b.merch_delta) DESC, b.title ASC, b.pid ASC`;
+  } else orderBy = `b.score DESC, b.title ASC, b.pid ASC`;
 
   const limP = pb.add(limit);
   const offP = pb.add(offset);
@@ -221,7 +247,7 @@ export async function runProducts(
       SELECT product_id, shopify_product_gid AS gid, doc, title, available, product_id AS pid,
              price_min, price_max, created_at_shopify,
              (${clsExpr}) AS cls,
-             (${scoreExpr}) AS score
+             (${scoreExpr}) AS score${merchCols}
       FROM product_search_doc WHERE ${where}
     )
     SELECT b.product_id, b.gid, b.doc, b.cls, b.score,
@@ -264,7 +290,7 @@ export async function searchWithExec(
   }
 
   const plan = await buildPlan(exec, shopId, active.id, q);
-  const planned = await resolvePlanned(exec, shopId, active.id, plan, filters);
+  const planned = await resolvePlanned(exec, shopId, active.id, plan, filters, params.merch);
   const corrections = plan.corrections;
 
   if (!planned) {

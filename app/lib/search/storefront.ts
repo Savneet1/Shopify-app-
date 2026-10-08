@@ -19,6 +19,8 @@ import { computeFacetsWithExec, type Facet } from "./facets";
 import { catalogSuggestionsWithExec, type Suggestion } from "./suggest";
 import { matchRedirect } from "./redirects";
 import { buildParseContext, parseQuery, type InterpretedItem, type InterpretKind } from "./nlparse";
+import { loadMerchPlan, EMPTY_MERCH_PLAN, type MerchPlan, type MerchAnnotation } from "~/lib/merch/rules";
+import { loadActiveBanners, type Banner } from "~/lib/merch/banners";
 
 /**
  * Storefront orchestrator (Phase 3 fallback + Phase 4 facets + Phase 5 relevance
@@ -39,6 +41,8 @@ export interface StorefrontParams extends SearchParams {
   nl?: boolean;
   /** Interpretation kinds to skip (drop individual interpretations). */
   ignore?: InterpretKind[];
+  /** Phase 8: anonymous A/B visitor token (first-party storage only; no PII). */
+  visitorToken?: string | null;
 }
 
 export interface InterpretedAs {
@@ -83,6 +87,14 @@ export interface StorefrontSearchResponse {
   correctedQuery: string | null;
   redirect: string | null;
   interpretedAs: InterpretedAs;
+  /** Phase 8: merchandising banners for this query/collection (sanitized). */
+  banners: Banner[];
+  /** Phase 8: running A/B experiment assignments for this visitor (for the
+   * storefront to beacon aggregate exposure/clicks). */
+  experiments: { experimentId: string; variant: string }[];
+  /** Phase 8: per-product merchandising annotations (for the "why is this
+   * here?" admin explanation), keyed by product id. */
+  merchandising: { annotations: Record<string, MerchAnnotation> };
 }
 
 interface CoreResult {
@@ -117,10 +129,10 @@ function correctedQueryString(keptTokens: string[], corrections: Correction[]): 
 /** Run plan → ranked products → facets for a given q/filters/sort. One code path. */
 async function runCore(
   exec: Exec, shopId: string, active: IndexVersionRow, q: string, filters: SearchFilters,
-  sort: SortOption, limit: number, offset: number,
+  sort: SortOption, limit: number, offset: number, merch: MerchPlan,
 ): Promise<CoreResult> {
   const plan = await buildPlan(exec, shopId, active.id, q);
-  const planned = await resolvePlanned(exec, shopId, active.id, plan, filters);
+  const planned = await resolvePlanned(exec, shopId, active.id, plan, filters, merch);
   const corrections = plan.corrections;
   const correctedQuery = correctedQueryString(plan.keptTokens, corrections);
   if (!planned) {
@@ -174,6 +186,8 @@ export async function storefrontSearchWithExec(
     suggestions: [] as Suggestion[], facets: [] as Facet[], appliedFilters: explicitFilters,
     priceRange: null as { min: string; max: string } | null, corrected: false, corrections: [] as Correction[],
     correctedQuery: null as string | null, redirect: null as string | null, interpretedAs: baseInterpreted,
+    banners: [] as Banner[], experiments: [] as { experimentId: string; variant: string }[],
+    merchandising: { annotations: {} as Record<string, MerchAnnotation> },
   };
 
   const active = await getActiveVersion(exec, shopId);
@@ -184,6 +198,15 @@ export async function storefrontSearchWithExec(
     const redirect = await matchRedirect(exec, shopId, q);
     if (redirect) return { ...base, strategy: "none", indexVersion: active.version, redirect, tookMs: Date.now() - started };
   }
+
+  // Phase 8: one merchandising plan + one `now` per request. Scope matches the
+  // RAW shopper query (what they typed), not the NL-remaining text. Empty when
+  // no rules/experiments are active → the search path is byte-identical to
+  // Phase 6.1b. Banners for this query/collection are loaded alongside.
+  const now = new Date();
+  const collectionGid = explicitFilters.collectionId;
+  const merch = await loadMerchPlan(exec, shopId, active.id, { q, collectionGid, now, token: params.visitorToken ?? null });
+  const banners = await loadActiveBanners(exec, shopId, { q, collectionGid, now });
 
   // Phase 6: parse → merge → effective params.
   let effectiveQ = q;
@@ -208,7 +231,7 @@ export async function storefrontSearchWithExec(
   }
 
   // Effective (parsed) search.
-  let core = await runCore(exec, shopId, active, effectiveQ, effectiveFilters, effectiveSort, limit, offset);
+  let core = await runCore(exec, shopId, active, effectiveQ, effectiveFilters, effectiveSort, limit, offset, merch);
   let appliedFilters = effectiveFilters;
   let usedSort = effectiveSort;
   let usedQuery = effectiveQ;
@@ -216,7 +239,7 @@ export async function storefrontSearchWithExec(
   // Never worse than Phase 5: if parsing produced zero results but plain search
   // would not, fall back to plain search.
   if (interpretedAs.applied && core.total === 0) {
-    const plain = await runCore(exec, shopId, active, q, explicitFilters, explicitSort ?? "relevance", limit, offset);
+    const plain = await runCore(exec, shopId, active, q, explicitFilters, explicitSort ?? "relevance", limit, offset, merch);
     if (plain.total > 0) {
       core = plain;
       appliedFilters = explicitFilters;
@@ -227,7 +250,10 @@ export async function storefrontSearchWithExec(
   }
 
   const zeroResult = core.total === 0;
-  const suggestions = zeroResult && usedQuery.length > 0 ? await catalogSuggestionsWithExec(exec, shopId, usedQuery) : [];
+  // Hidden products are excluded from suggestions too (Phase 8).
+  const suggestions = zeroResult && usedQuery.length > 0
+    ? await catalogSuggestionsWithExec(exec, shopId, usedQuery, undefined, { hideIds: merch.hideIds })
+    : [];
 
   return {
     query: q,
@@ -248,6 +274,9 @@ export async function storefrontSearchWithExec(
     correctedQuery: core.correctedQuery,
     redirect: null,
     interpretedAs,
+    banners,
+    experiments: merch.assignments.map((a) => ({ experimentId: a.experimentId, variant: a.variant })),
+    merchandising: { annotations: merch.annotations },
   };
 }
 
@@ -267,6 +296,7 @@ export async function storefrontSearch(
       suggestions: [], facets: [], appliedFilters: filtersForEcho, priceRange: null, corrected: false,
       corrections: [], correctedQuery: null, redirect: null,
       interpretedAs: { enabled: params.nl !== false, applied: false, interpreted: [], remaining: "", negations: [], negationIgnored: [], warning: null, sort: null, fellBack: false },
+      banners: [], experiments: [], merchandising: { annotations: {} },
     };
   }
 }

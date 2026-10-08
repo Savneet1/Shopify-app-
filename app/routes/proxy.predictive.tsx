@@ -14,6 +14,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) =>
     predictiveSearch(shopId, {
       q: url.searchParams.get("q") ?? "",
       limit: numParam(url.searchParams.get("limit")),
+      visitorToken: url.searchParams.get("abt"), // Phase 8: anonymous A/B token
     }),
   );
 

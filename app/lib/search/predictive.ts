@@ -8,6 +8,7 @@ import {
   type SearchStrategy,
 } from "./query";
 import { catalogSuggestionsWithExec, type Suggestion } from "./suggest";
+import { loadMerchPlan } from "~/lib/merch/rules";
 
 /**
  * Predictive (as-you-type) search (Phase 3.4): a small, fast set of product
@@ -41,7 +42,7 @@ function clampPredictiveLimit(limit?: number): number {
 export async function predictiveWithExec(
   exec: Exec,
   shopId: string,
-  params: { q: string; limit?: number },
+  params: { q: string; limit?: number; visitorToken?: string | null },
 ): Promise<PredictiveResponse> {
   const started = Date.now();
   const { q } = normalizeParams({ q: params.q });
@@ -63,10 +64,14 @@ export async function predictiveWithExec(
       indexVersion: active.version, tookMs: Date.now() - started,
     };
   }
+  // Phase 8: hidden products are excluded from predictive + its suggestions.
+  const merch = await loadMerchPlan(exec, shopId, active.id, {
+    q, collectionGid: null, now: new Date(), token: params.visitorToken ?? null,
+  });
   // Products via the shared cascade (small page). searchWithExec sets its own
   // statement_timeout; both are SET LOCAL, harmless to re-set.
-  const res = await searchWithExec(exec, shopId, { q, limit, offset: 0 });
-  const suggestions = await catalogSuggestionsWithExec(exec, shopId, q, PREDICTIVE_MAX_LIMIT);
+  const res = await searchWithExec(exec, shopId, { q, limit, offset: 0, merch });
+  const suggestions = await catalogSuggestionsWithExec(exec, shopId, q, PREDICTIVE_MAX_LIMIT, { hideIds: merch.hideIds });
   return {
     products: res.products,
     suggestions,
@@ -79,7 +84,7 @@ export async function predictiveWithExec(
 
 export async function predictiveSearch(
   shopId: string,
-  params: { q: string; limit?: number },
+  params: { q: string; limit?: number; visitorToken?: string | null },
 ): Promise<PredictiveResponse> {
   const started = Date.now();
   try {

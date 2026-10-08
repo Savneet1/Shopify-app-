@@ -11,6 +11,7 @@
       "debounce_ms": { "label": "Typing debounce" },
       "per_page": { "label": "Results per page" },
       "nl_enabled": { "label": "Natural-language parsing" },
+      "show_banners": { "label": "Show merchandising banners" },
       "metafield_key": {
         "label": "Metafield facet key",
         "info": "The configured metafield facet key (default: material)."

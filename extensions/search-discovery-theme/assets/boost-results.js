@@ -46,6 +46,8 @@
     live.setAttribute("aria-live", "polite");
     var notice = el("div", "boost-results__notice");
     notice.hidden = true;
+    var bannerBox = el("div", "boost-banners");
+    var showBanners = cfg.banners !== false; // merchant toggle (default on)
     var interp = el("div", "boost-results__interpreted");
     var layout = el("div", "boost-results__layout");
     var facetsPanel = el("aside", "boost-facets");
@@ -63,13 +65,59 @@
     layout.appendChild(main);
     root.appendChild(live);
     root.appendChild(notice);
+    if (showBanners) root.appendChild(bannerBox);
     root.appendChild(interp);
     root.appendChild(layout);
 
     var state = Core.parseState(new URLSearchParams(window.location.search));
     if (!nlDefault) state.nl = false;
 
+    // Anonymous A/B token: a random first-party value, stored with try/catch so
+    // a private window / blocked storage simply yields control (no token). No
+    // PII, no IP, no fingerprinting. (Shopify customer-privacy consent gating is
+    // Requires Verification — see docs/PHASE8.md.)
+    function getVisitorToken() {
+      try {
+        var k = "boost_abt";
+        var v = window.localStorage.getItem(k);
+        if (!v) {
+          v = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
+          window.localStorage.setItem(k, v);
+        }
+        return v;
+      } catch (e) { return null; }
+    }
+    var abt = getVisitorToken();
+    var exposed = {}; // experimentId -> true (one exposure beacon per load)
+
     function announce(msg) { live.textContent = ""; live.textContent = msg; }
+
+    function withToken(url) {
+      return abt ? url + (url.indexOf("?") >= 0 ? "&" : "?") + "abt=" + encodeURIComponent(abt) : url;
+    }
+
+    function beacon(experimentId, variant, type) {
+      var u = base.replace(/\/+$/, "") + "/merch-event?experiment=" + encodeURIComponent(experimentId) +
+        "&variant=" + encodeURIComponent(variant) + "&type=" + encodeURIComponent(type);
+      try {
+        if (navigator && typeof navigator.sendBeacon === "function") navigator.sendBeacon(u);
+        else fetch(u, { method: "POST", keepalive: true }).catch(function () {});
+      } catch (e) { /* beacons never block the UI */ }
+    }
+
+    function recordExposures(data) {
+      var exps = (data && Array.isArray(data.experiments)) ? data.experiments : [];
+      exps.forEach(function (x) {
+        if (!x || !x.experimentId || exposed[x.experimentId]) return;
+        exposed[x.experimentId] = true;
+        beacon(x.experimentId, x.variant || "control", "exposure");
+      });
+    }
+    function recordClicks(data) {
+      var exps = (data && Array.isArray(data.experiments)) ? data.experiments : [];
+      exps.forEach(function (x) { if (x && x.experimentId) beacon(x.experimentId, x.variant || "control", "click"); });
+    }
+    var lastExperiments = [];
 
     function pushState(replace) {
       var qs = Core.serializeState(state);
@@ -181,6 +229,32 @@
       });
     }
 
+    // ---- banners (textContent + validated image/link only) ----
+    function renderBanners(data) {
+      if (!showBanners) return;
+      clear(bannerBox);
+      var banners = (data && Array.isArray(data.banners)) ? data.banners : [];
+      banners.forEach(function (b) {
+        if (!b) return;
+        var box = el("div", "boost-banner");
+        var inner = el("div", "boost-banner__inner");
+        if (b.imageUrl && Core.isSafeImageUrl(b.imageUrl, cfg.imageHosts)) {
+          var img = document.createElement("img");
+          img.className = "boost-banner__img";
+          img.src = b.imageUrl; img.alt = ""; img.loading = "lazy";
+          inner.appendChild(img);
+        }
+        var txt = el("div", "boost-banner__text");
+        if (b.title) txt.appendChild(el("div", "boost-banner__title", b.title)); // textContent
+        if (b.body) txt.appendChild(el("div", "boost-banner__body", b.body));     // textContent
+        inner.appendChild(txt);
+        var linkPath = b.linkPath ? Core.toSameSitePath(b.linkPath, cfg.allowedHosts, window.location.hostname) : null;
+        if (linkPath) { var a = el("a", "boost-banner__link"); a.href = linkPath; a.appendChild(inner); box.appendChild(a); }
+        else box.appendChild(inner);
+        bannerBox.appendChild(box);
+      });
+    }
+
     // ---- toolbar: result count + sort + availability ----
     function renderToolbar(data) {
       clear(toolbar);
@@ -235,6 +309,8 @@
         if (pr) meta.appendChild(el("span", "boost-card__price", pr));
         if (!p.available) meta.appendChild(el("span", "boost-card__oos", t(cfg, "outOfStock", "Out of stock")));
         a.appendChild(meta);
+        // A click on a result is a click for every active experiment variant.
+        a.addEventListener("click", function () { recordClicks({ experiments: lastExperiments }); });
         li.appendChild(a);
         grid.appendChild(li);
       });
@@ -294,7 +370,7 @@
     function run(focusGrid) {
       notice.hidden = true;
       var myReq = ++inflight;
-      var url = Core.buildProxyUrl(base, "products", state, perPage);
+      var url = withToken(Core.buildProxyUrl(base, "products", state, perPage));
       var controller = ("AbortController" in window) ? new AbortController() : null;
       var timedOut = false;
       var timer = window.setTimeout(function () { timedOut = true; if (controller) controller.abort(); }, cfg.timeoutMs || 2000);
@@ -316,11 +392,14 @@
             var rpath = Core.toSameSitePath(data.redirect, cfg.allowedHosts, window.location.hostname);
             if (rpath) { window.location.assign(rpath); return; }
           }
+          lastExperiments = (data && Array.isArray(data.experiments)) ? data.experiments : [];
+          renderBanners(data);
           renderInterpreted(data);
           renderFacets(data);
           renderToolbar(data);
           renderGrid(data);
           renderPager(data);
+          recordExposures(data); // one aggregate exposure beacon per experiment per load
           var msg = String(data.total || 0) + " " + t(cfg, "results", "results");
           var ia = data.interpretedAs;
           if (ia && ia.applied && ia.warning) msg += ". " + ia.warning;

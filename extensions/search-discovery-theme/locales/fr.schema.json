@@ -11,6 +11,7 @@
       "debounce_ms": { "label": "Anti-rebond de saisie" },
       "per_page": { "label": "Résultats par page" },
       "nl_enabled": { "label": "Analyse en langage naturel" },
+      "show_banners": { "label": "Afficher les bannières de merchandising" },
       "metafield_key": {
         "label": "Clé de facette metafield",
         "info": "La clé de facette metafield configurée (par défaut : material)."

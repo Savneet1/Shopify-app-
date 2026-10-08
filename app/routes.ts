@@ -21,6 +21,10 @@ export default [
     route("redirects", "routes/app.redirects.tsx"),
     route("stopwords", "routes/app.stopwords.tsx"),
     route("synonyms", "routes/app.synonyms.tsx"),
+    // Phase 8: merchandising, banners, A/B experiments.
+    route("merch", "routes/app.merch.tsx"),
+    route("banners", "routes/app.banners.tsx"),
+    route("experiments", "routes/app.experiments.tsx"),
   ]),
 
   // App Proxy storefront endpoints (Phase 3). Shopify proxies
@@ -29,6 +33,8 @@ export default [
   route("proxy/products", "routes/proxy.products.tsx"),
   route("proxy/predictive", "routes/proxy.predictive.tsx"),
   route("proxy/suggest", "routes/proxy.suggest.tsx"),
+  // Phase 8: A/B aggregate exposure/click beacon.
+  route("proxy/merch-event", "routes/proxy.merch-event.tsx"),
 
   // Webhooks.
   route("webhooks/app/uninstalled", "routes/webhooks.app.uninstalled.tsx"),

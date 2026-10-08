@@ -38,6 +38,7 @@
     "currency": {{ shop.currency | json }},
     "perPage": {{ block.settings.per_page | default: 24 | json }},
     "nlEnabled": {{ block.settings.nl_enabled | default: true | json }},
+    "banners": {{ block.settings.show_banners | default: true | json }},
     "metafieldKey": {{ block.settings.metafield_key | default: 'material' | json }},
     "timeoutMs": {{ block.settings.timeout_ms | default: 2000 | json }},
     "labels": {
@@ -100,6 +101,12 @@
       "type": "checkbox",
       "id": "nl_enabled",
       "label": "t:boost.settings.nl_enabled.label",
+      "default": true
+    },
+    {
+      "type": "checkbox",
+      "id": "show_banners",
+      "label": "t:boost.settings.show_banners.label",
       "default": true
     },
     {

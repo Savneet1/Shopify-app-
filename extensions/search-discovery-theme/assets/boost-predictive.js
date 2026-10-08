@@ -145,8 +145,13 @@
       else form.submit();
     }
 
+    function visitorToken() {
+      try { return window.localStorage.getItem("boost_abt"); } catch (e) { return null; }
+    }
     function fetchPredictive(q) {
       var url = Core.buildProxyUrl(base, "predictive", { q: q });
+      var abt = visitorToken();
+      if (abt) url += (url.indexOf("?") >= 0 ? "&" : "?") + "abt=" + encodeURIComponent(abt);
       var controller = ("AbortController" in window) ? new AbortController() : null;
       var timedOut = false;
       var timer = window.setTimeout(function () {
