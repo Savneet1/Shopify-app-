@@ -12,6 +12,10 @@
       "per_page": { "label": "Résultats par page" },
       "nl_enabled": { "label": "Analyse en langage naturel" },
       "show_banners": { "label": "Afficher les bannières de merchandising" },
+      "ab_testing": {
+        "label": "Activer les expériences A/B sur la vitrine",
+        "info": "Lorsqu'activé, un jeton de visiteur anonyme n'est utilisé qu'après le consentement analytique."
+      },
       "metafield_key": {
         "label": "Clé de facette metafield",
         "info": "La clé de facette metafield configurée (par défaut : material)."

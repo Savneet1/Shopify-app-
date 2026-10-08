@@ -16,20 +16,21 @@ import { recordEvent } from "~/lib/merch/experiments";
  */
 function readParams(url: URL) {
   const sp = url.searchParams;
+  // Raw, unvalidated — recordEvent strictly validates experiment id (uuid),
+  // variant and type before any SQL, returning false (never throwing) on junk.
   return {
     experimentId: sp.get("experiment") ?? "",
     variant: sp.get("variant") ?? "",
-    type: sp.get("type") === "click" ? "click" : "exposure",
-  } as const;
+    type: sp.get("type") ?? "",
+  };
 }
 
 async function handle(request: Request) {
   return handleProxy(request, async ({ shopId, url }) => {
     const { experimentId, variant, type } = readParams(url);
-    let recorded = false;
-    if (experimentId) {
-      recorded = await withShopExec(shopId, (e) => recordEvent(e, shopId, experimentId, variant, type));
-    }
+    const recorded = await withShopExec(shopId, (e) =>
+      recordEvent(e, shopId, experimentId, variant, type as "exposure" | "click"),
+    );
     return { ok: recorded };
   });
 }

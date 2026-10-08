@@ -4,6 +4,7 @@ import { storefrontSearch } from "~/lib/search/storefront";
 import { filtersFromSearchParams } from "~/lib/search/params";
 import { normalizeSort } from "~/lib/search/query";
 import type { InterpretKind } from "~/lib/search/nlparse";
+import { sanitizeToken } from "~/lib/merch/assign";
 
 /**
  * Storefront search + filters + NL endpoint (App Proxy).
@@ -33,7 +34,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) =>
       sort: sp.get("sort") != null ? normalizeSort(sp.get("sort")) : undefined,
       nl,
       ignore,
-      visitorToken: sp.get("abt"), // Phase 8: anonymous A/B token (no PII)
+      visitorToken: sanitizeToken(sp.get("abt")), // Phase 8: bounded anonymous A/B token (no PII)
     });
   });
 

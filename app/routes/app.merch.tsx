@@ -76,8 +76,10 @@ export default function Merch() {
           Pin/boost/demote affect the <strong>relevance</strong> sort only; hide applies
           to every sort and removes the product from results, facet counts, predictive and
           suggestions (never from product pages). A pin/boost of a hidden, draft or
-          out-of-scope product has no effect. Conflict order: hide &gt; pin &gt; boost &gt;
-          demote, then lower priority wins. Max {MAX_RULES_PER_SHOP} rules.
+          out-of-scope product has no effect. <strong>Pin order</strong> sets the order
+          among pinned products (1 = first); pinned products always appear at the top —
+          pinning to an absolute Nth slot is not supported. Conflict order: hide &gt; pin
+          &gt; boost &gt; demote, then lower priority wins. Max {MAX_RULES_PER_SHOP} rules.
         </p>
 
         <Form method="post" style={{ display: "grid", gap: 8, maxWidth: 640, marginBottom: 20, border: "1px solid #e3e3e3", borderRadius: 8, padding: 14 }}>
@@ -92,7 +94,7 @@ export default function Merch() {
           <textarea name="targets" placeholder="target products — one per line; gid://shopify/Product/123 or a product handle" rows={3} />
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <label>priority <input name="priority" type="number" defaultValue={100} style={{ width: 80 }} /></label>
-            <label>position (pin) <input name="position" type="number" defaultValue={1} style={{ width: 70 }} /></label>
+            <label title="1 = first among pinned products; pinned products always appear at the top">pin order <input name="position" type="number" defaultValue={1} style={{ width: 70 }} /></label>
             <label>weight (boost/demote 1–90) <input name="weight" type="number" defaultValue={WEIGHT_DEFAULT} style={{ width: 70 }} /></label>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -118,7 +120,7 @@ export default function Merch() {
               <code>{r.action}</code>{" · "}
               <code>{r.scope_type}{r.scope_value ? `: ${r.scope_value}` : ""}</code>{" · "}
               priority {r.priority}
-              {r.action === "pin" && r.position != null ? ` · position ${r.position}` : ""}
+              {r.action === "pin" && r.position != null ? ` · pin order ${r.position}` : ""}
               {(r.action === "boost" || r.action === "demote") && r.weight != null ? ` · weight ${r.weight}` : ""}
               {r.variant ? ` · variant ${r.variant}` : ""}
               {(r.starts_at || r.ends_at) ? ` · ${r.starts_at ?? "…"} → ${r.ends_at ?? "…"}` : ""}

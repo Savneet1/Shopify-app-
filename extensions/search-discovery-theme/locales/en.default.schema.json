@@ -12,6 +12,10 @@
       "per_page": { "label": "Results per page" },
       "nl_enabled": { "label": "Natural-language parsing" },
       "show_banners": { "label": "Show merchandising banners" },
+      "ab_testing": {
+        "label": "Enable A/B experiments on the storefront",
+        "info": "When on, an anonymous visitor token is used only after analytics consent is granted."
+      },
       "metafield_key": {
         "label": "Metafield facet key",
         "info": "The configured metafield facet key (default: material)."

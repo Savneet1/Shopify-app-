@@ -111,3 +111,66 @@ verification.
 STATUS: PHASE 8 IMPLEMENTED & PG-VERIFIED (275 passed | 7 skipped). LIVE-PRISMA
 CONFIRMATION PENDING. PHASE 9 NOT STARTED. AWAITING LIVE-PRISMA RUN AND EXPLICIT
 USER APPROVAL.
+
+---
+
+# Phase 8.1 — fix batch (built on `3fd6112`)
+
+No migration, no new scope/dependency/extension; merchandising stays inside the
+one planner.
+
+## H1 — consent gating for the A/B token (failing input → new behaviour)
+
+Before: `boost-results.js` created/stored a `boost_abt` token for **every**
+visitor with no consent check, and `boost-predictive.js` read it. Now:
+- `boost-core.js` adds pure `consentAllowsAnalytics(privacyApi)` — true only when
+  `window.Shopify.customerPrivacy.analyticsProcessingAllowed()` (or the
+  `userCanBeTracked()` fallback) returns **strictly true**; absent API, missing
+  method, non-true, or a throw → false (fail-closed).
+- The token is created/read **only** when the merchant A/B toggle is on AND
+  consent is granted; it is created **lazily** (only after a response shows a
+  running experiment → first view is control); with no consent the client sends
+  no `abt` (server assigns control) and **deletes** any stored token; a
+  `visitorConsentCollected` listener re-evaluates once and drops the token if not
+  granted. No token is ever created when no experiment is running.
+- New merchant setting **"Enable A/B experiments on the storefront"** (default
+  on) on the results block and predictive embed; off → no token logic runs.
+  (en+fr locales, parity green.)
+
+## H2 — public beacon + token hardening
+
+- `recordEvent` (and the `/proxy/merch-event` route) now validate the experiment
+  id with a strict UUID regex, and the variant and type strictly, **before any
+  SQL / `::uuid` cast** — malformed/injection/oversize/unknown/other-shop/stopped
+  input returns `{ok:false}`, never throws, never 500.
+- The `abt` token is bounded to 1..64 chars of `[A-Za-z0-9_-]` at both proxy read
+  points (`sanitizeToken`) and the client generator; anything else → control.
+
+## H3 — pin "position" honesty (no ranking change)
+
+`position` is relabelled **"pin order"** in the admin, the rule list, and the
+playground ("pinned (order N)"); docs state that true absolute slot positioning
+is **not implemented** (and why). Behaviour is unchanged: a lone pin with order 5
+appears first (asserted by a new test).
+
+## H4 — docs
+
+`docs/PHASE8.md` gains a **Known limitations** section: the beacon endpoint is
+public (counters are advisory, inflatable, not de-duplicable without per-user
+data; per-shop rate limiting applies); banner title/body are raw text and MUST be
+rendered via `textContent`/React text; `loadMerchPlan` adds a few queries per
+request (not measured, Phase 14).
+
+## Tests vs 275
+
+Full suite: **284 passed | 7 skipped (291)**. **+9**: `phase8-units` +2 (token
+sanitize + uuid), `phase8-consent` +5 (consentAllowsAnalytics fakes + a static
+check that neither storefront file reads/creates `boost_abt` outside a
+consent-guarded helper), `phase8-merch` +2 (recordEvent hardening across
+malformed/unknown/other-shop/stopped/bad-variant without throwing; pin order 5
+appears first). No prior assertion weakened. `typecheck` 0; `build` OK;
+`worker:build` OK. No performance numbers.
+
+STATUS: PHASE 8.1 IMPLEMENTED & PG-VERIFIED (284 passed | 7 skipped). LIVE-PRISMA
+CONFIRMATION PENDING. PHASE 9 NOT STARTED. AWAITING LIVE-PRISMA RUN AND EXPLICIT
+USER APPROVAL.

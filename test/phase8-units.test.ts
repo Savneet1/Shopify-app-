@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { assignVariant, bucketOf, fnv1a32 } from "~/lib/merch/assign";
+import { assignVariant, bucketOf, fnv1a32, sanitizeToken, isUuid } from "~/lib/merch/assign";
 import { ruleScopeMatches } from "~/lib/merch/rules";
 import { isSameSitePath, isAllowedBannerImage } from "~/lib/merch/banners";
 
@@ -46,6 +46,28 @@ describe("Phase 8 — A/B assignment (deterministic, no PII)", () => {
     const variants = new Set<string>();
     for (let e = 0; e < 50; e++) variants.add(assignVariant("shop", "exp-" + e, "same-token", 50));
     expect(variants.size).toBe(2); // both A and B appear across experiments
+  });
+});
+
+describe("Phase 8.1 — token + uuid hardening (H2)", () => {
+  it("sanitizeToken bounds length and charset, else null (→ control)", () => {
+    expect(sanitizeToken("good_tok-123")).toBe("good_tok-123");
+    expect(sanitizeToken("x".repeat(64))).toHaveLength(64);
+    expect(sanitizeToken("x".repeat(65))).toBeNull(); // too long
+    expect(sanitizeToken("")).toBeNull();
+    expect(sanitizeToken("bad token!")).toBeNull(); // space + "!"
+    expect(sanitizeToken("'; DROP TABLE x;--")).toBeNull();
+    expect(sanitizeToken(null)).toBeNull();
+    expect(sanitizeToken(undefined)).toBeNull();
+    // a sanitized token still assigns deterministically
+    const t = sanitizeToken("visitor-42")!;
+    expect(assignVariant("s", "e", t, 50)).toBe(assignVariant("s", "e", t, 50));
+  });
+  it("isUuid accepts only uuid-shaped ids", () => {
+    expect(isUuid("3f1a2b4c-5d6e-7f80-9a1b-2c3d4e5f6071")).toBe(true);
+    for (const v of ["not-a-uuid", "", "'; DROP TABLE ab_exposure;--", "x".repeat(10000), 123 as any, null as any]) {
+      expect(isUuid(v), String(v)).toBe(false);
+    }
   });
 });
 

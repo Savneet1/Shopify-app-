@@ -72,27 +72,62 @@
     var state = Core.parseState(new URLSearchParams(window.location.search));
     if (!nlDefault) state.nl = false;
 
-    // Anonymous A/B token: a random first-party value, stored with try/catch so
-    // a private window / blocked storage simply yields control (no token). No
-    // PII, no IP, no fingerprinting. (Shopify customer-privacy consent gating is
-    // Requires Verification — see docs/PHASE8.md.)
-    function getVisitorToken() {
+    // Anonymous A/B token, CONSENT-GATED (H1). A token is only ever created or
+    // read when A/B is enabled AND the Shopify customer-privacy API grants
+    // analytics consent (fail-closed via Core.consentAllowsAnalytics). Without
+    // consent we send no token (the server assigns control) and delete any
+    // stored token. The token is created LAZILY — only after a response shows a
+    // running experiment — so a first view is always control. No PII, no IP, no
+    // fingerprinting. Consent API specifics are Requires Verification.
+    var abEnabled = cfg.abTesting !== false; // merchant toggle (default on)
+    var exposed = {}; // experimentId -> true (one exposure beacon per load)
+    var lastExperiments = [];
+
+    function privacyApi() {
+      try { return window.Shopify && window.Shopify.customerPrivacy; } catch (e) { return null; }
+    }
+    function consentOk() {
+      return abEnabled && Core.consentAllowsAnalytics(privacyApi());
+    }
+    function readToken() {
+      if (!consentOk()) return null; // consent-guarded read of boost_abt
+      try { return Core.sanitizeToken(window.localStorage.getItem("boost_abt")); } catch (e) { return null; }
+    }
+    function makeToken() {
+      if (!consentOk()) return null; // consent-guarded create of boost_abt
       try {
-        var k = "boost_abt";
-        var v = window.localStorage.getItem(k);
-        if (!v) {
-          v = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
-          window.localStorage.setItem(k, v);
-        }
+        var v = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10)).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64);
+        v = Core.sanitizeToken(v);
+        if (v) window.localStorage.setItem("boost_abt", v);
         return v;
       } catch (e) { return null; }
     }
-    var abt = getVisitorToken();
-    var exposed = {}; // experimentId -> true (one exposure beacon per load)
+    function clearToken() { try { window.localStorage.removeItem("boost_abt"); } catch (e) { /* ok */ } }
+
+    // Current token to send: none unless consent is granted; without consent we
+    // also delete any previously stored token.
+    function currentToken() {
+      if (!consentOk()) { clearToken(); return null; }
+      return readToken();
+    }
+    // Lazily create the token once a running experiment is seen (applies from
+    // the NEXT request, so the first view stays control). No experiments → never.
+    function maybeCreateToken(data) {
+      if (!consentOk()) return;
+      var exps = (data && Array.isArray(data.experiments)) ? data.experiments : [];
+      if (exps.length > 0 && !readToken()) makeToken();
+    }
+    // Re-evaluate once when consent is collected; if not granted, drop the token.
+    try {
+      document.addEventListener("visitorConsentCollected", function () {
+        if (!consentOk()) clearToken();
+      }, { once: true });
+    } catch (e) { /* ok */ }
 
     function announce(msg) { live.textContent = ""; live.textContent = msg; }
 
     function withToken(url) {
+      var abt = currentToken();
       return abt ? url + (url.indexOf("?") >= 0 ? "&" : "?") + "abt=" + encodeURIComponent(abt) : url;
     }
 
@@ -106,6 +141,7 @@
     }
 
     function recordExposures(data) {
+      if (!abEnabled) return;
       var exps = (data && Array.isArray(data.experiments)) ? data.experiments : [];
       exps.forEach(function (x) {
         if (!x || !x.experimentId || exposed[x.experimentId]) return;
@@ -114,10 +150,10 @@
       });
     }
     function recordClicks(data) {
+      if (!abEnabled) return;
       var exps = (data && Array.isArray(data.experiments)) ? data.experiments : [];
       exps.forEach(function (x) { if (x && x.experimentId) beacon(x.experimentId, x.variant || "control", "click"); });
     }
-    var lastExperiments = [];
 
     function pushState(replace) {
       var qs = Core.serializeState(state);
@@ -393,6 +429,7 @@
             if (rpath) { window.location.assign(rpath); return; }
           }
           lastExperiments = (data && Array.isArray(data.experiments)) ? data.experiments : [];
+          maybeCreateToken(data); // lazily create the token once an experiment is running (next request)
           renderBanners(data);
           renderInterpreted(data);
           renderFacets(data);

@@ -1,6 +1,7 @@
 import type { LoaderFunctionArgs } from "react-router";
 import { handleProxy } from "~/lib/search/proxy.server";
 import { predictiveSearch } from "~/lib/search/predictive";
+import { sanitizeToken } from "~/lib/merch/assign";
 
 /**
  * Predictive (as-you-type) search endpoint (App Proxy).
@@ -14,7 +15,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) =>
     predictiveSearch(shopId, {
       q: url.searchParams.get("q") ?? "",
       limit: numParam(url.searchParams.get("limit")),
-      visitorToken: url.searchParams.get("abt"), // Phase 8: anonymous A/B token
+      visitorToken: sanitizeToken(url.searchParams.get("abt")), // Phase 8: bounded A/B token
     }),
   );
 

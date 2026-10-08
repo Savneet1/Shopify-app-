@@ -206,7 +206,7 @@ export default function SearchPlayground() {
                             {(() => {
                               const a = result.merchandising?.annotations?.[p.id];
                               if (!a) return null;
-                              const label = a.action === "pin" ? `pinned #${a.position}`
+                              const label = a.action === "pin" ? `pinned (order ${a.position})`
                                 : a.action === "boost" ? `boosted +${a.delta}`
                                 : a.action === "demote" ? `demoted ${a.delta}`
                                 : a.action;

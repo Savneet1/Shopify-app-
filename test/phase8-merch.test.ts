@@ -203,4 +203,36 @@ describe("Phase 8 — merchandising engine", () => {
     const otherRules = await db.withShopExec(other, (e) => listRules(e, other));
     expect(otherRules).toHaveLength(0); // RLS: cannot see shop A's rules
   });
+
+  it("H2: recordEvent rejects malformed/unknown/stopped/bad input without throwing", async () => {
+    const expId = await db.withShopExec(shop, (e) => createExperiment(e, shop, { name: "h2", splitPct: 50 }).then((x) => x.id));
+    const rec = (id: string, variant: string, type: any) => db.withShopExec(shop, (e) => recordEvent(e, shop, id, variant, type));
+    // draft (not running) → false
+    expect(await rec(expId, "A", "exposure")).toBe(false);
+    await db.withShopExec(shop, (e) => setExperimentStatus(e, shop, expId, "running"));
+    // malformed ids / variants / types → false, never throw
+    expect(await rec("not-a-uuid", "A", "exposure")).toBe(false);
+    expect(await rec("'; DROP TABLE ab_exposure;--", "A", "exposure")).toBe(false);
+    expect(await rec("", "A", "exposure")).toBe(false);
+    expect(await rec("x".repeat(10000), "A", "exposure")).toBe(false);
+    expect(await rec("3f1a2b4c-5d6e-7f80-9a1b-2c3d4e5f6071", "A", "exposure")).toBe(false); // valid uuid, unknown
+    expect(await rec(expId, "bogus", "exposure")).toBe(false);
+    expect(await rec(expId, "A", "sql")).toBe(false);
+    // valid running experiment records
+    expect(await rec(expId, "A", "exposure")).toBe(true);
+    expect(await rec(expId, "A", "click")).toBe(true);
+    // other shop cannot record for this experiment id (RLS → not running there)
+    const other = await db.resolveShop("p8-h2-other.myshopify.com");
+    expect(await db.withShopExec(other, (e) => recordEvent(e, other, expId, "A", "exposure"))).toBe(false);
+    // stop → no longer records
+    await db.withShopExec(shop, (e) => setExperimentStatus(e, shop, expId, "stopped"));
+    expect(await rec(expId, "A", "exposure")).toBe(false);
+  });
+
+  it("H3: pin order is relative (a lone pin order 5 appears first, not slot 5)", async () => {
+    await db.withShopExec(shop, (e) => createRule(e, shop, { action: "pin", scopeType: "query_contains", scopeValue: "shoe", position: 5, targets: [{ kind: "gid", value: G(3) }] }));
+    const r = await sf({ q: "shoe", nl: false });
+    expect(r.products[0].gid).toBe(G(3)); // pinned product is first despite pin order 5
+    expect(r.products).toHaveLength(3); // no empty "slots 1–4"
+  });
 });

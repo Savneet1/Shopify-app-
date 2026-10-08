@@ -10,6 +10,24 @@
 
 export type Variant = "control" | "A" | "B";
 
+/** Strict UUID (v4-shaped) check for client-supplied ids before any ::uuid cast. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export function isUuid(v: unknown): boolean {
+  return typeof v === "string" && UUID_RE.test(v);
+}
+
+/**
+ * sanitizeToken(raw): bound the anonymous A/B token at every read point. Returns
+ * the token only when it is 1..64 chars of [A-Za-z0-9_-]; otherwise null (which
+ * assignVariant treats as control). Never throws.
+ */
+export function sanitizeToken(raw: unknown): string | null {
+  if (raw == null) return null;
+  const s = String(raw);
+  if (s.length < 1 || s.length > 64) return null;
+  return /^[A-Za-z0-9_-]+$/.test(s) ? s : null;
+}
+
 /** FNV-1a 32-bit — small, fast, dependency-free, well-distributed for strings. */
 export function fnv1a32(s: string): number {
   let h = 0x811c9dc5;

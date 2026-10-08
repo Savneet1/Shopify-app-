@@ -145,8 +145,16 @@
       else form.submit();
     }
 
+    // Consent-gated (H1): only read the A/B token when A/B is enabled AND the
+    // Shopify customer-privacy API grants analytics consent (fail-closed).
+    // Predictive never creates a token — only the results block does, lazily.
+    function privacyApi() {
+      try { return window.Shopify && window.Shopify.customerPrivacy; } catch (e) { return null; }
+    }
     function visitorToken() {
-      try { return window.localStorage.getItem("boost_abt"); } catch (e) { return null; }
+      if (cfg.abTesting === false) return null;
+      if (!Core.consentAllowsAnalytics(privacyApi())) return null; // consent-guarded read of boost_abt
+      try { return Core.sanitizeToken(window.localStorage.getItem("boost_abt")); } catch (e) { return null; }
     }
     function fetchPredictive(q) {
       var url = Core.buildProxyUrl(base, "predictive", { q: q });

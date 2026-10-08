@@ -304,6 +304,40 @@
   }
 
   /**
+   * consentAllowsAnalytics(privacyApi): FAIL-CLOSED consent gate for the
+   * anonymous A/B token. Returns true ONLY when the Shopify customer-privacy API
+   * object exists and a documented "analytics processing allowed" check returns
+   * STRICTLY true. An absent API, missing method, thrown error, or any non-true
+   * result (undefined, "true" string, etc.) → false. (The exact API method
+   * names/behaviour are Requires Verification on a real store; failing closed
+   * means a wrong guess only ever produces control, never tracking.)
+   */
+  function consentAllowsAnalytics(privacyApi) {
+    try {
+      if (!privacyApi || typeof privacyApi !== "object") return false;
+      if (typeof privacyApi.analyticsProcessingAllowed === "function") {
+        return privacyApi.analyticsProcessingAllowed() === true;
+      }
+      if (typeof privacyApi.userCanBeTracked === "function") {
+        return privacyApi.userCanBeTracked() === true;
+      }
+      return false;
+    } catch (e) { return false; }
+  }
+
+  /**
+   * sanitizeToken(raw): bound the anonymous A/B token. Returns the token only
+   * when it is 1..64 chars of [A-Za-z0-9_-]; otherwise null (treated as absent →
+   * control). Mirrors the server-side guard.
+   */
+  function sanitizeToken(raw) {
+    if (raw == null) return null;
+    var s = String(raw);
+    if (s.length < 1 || s.length > 64) return null;
+    return /^[A-Za-z0-9_-]+$/.test(s) ? s : null;
+  }
+
+  /**
    * decideFallback({timedOut, httpError, body}): the single rule for when the
    * enhancement must defer to the theme's native search. True on timeout, on a
    * non-OK HTTP status, on a missing/invalid body, or when the API itself asks
@@ -382,6 +416,8 @@
     toSameSitePath: toSameSitePath,
     isSafeImageUrl: isSafeImageUrl,
     formatPrice: formatPrice,
+    consentAllowsAnalytics: consentAllowsAnalytics,
+    sanitizeToken: sanitizeToken,
     decideFallback: decideFallback,
     comboboxKey: comboboxKey,
     makeDebouncer: makeDebouncer,

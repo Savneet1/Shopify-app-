@@ -1,5 +1,5 @@
 import type { Exec } from "~/lib/db/executor";
-import { assignVariant, type Variant } from "./assign";
+import { assignVariant, isUuid, type Variant } from "./assign";
 
 /**
  * A/B experiments (Phase 8.5): CRUD + aggregate exposure/click counters. No
@@ -123,7 +123,11 @@ export function assignmentsFor(
 export async function recordEvent(
   exec: Exec, shopId: string, experimentId: string, variant: string, type: "exposure" | "click",
 ): Promise<boolean> {
+  // H2: validate every client-supplied value BEFORE any ::uuid cast / SQL.
+  // Malformed input (injection, oversize, non-uuid) → false, never a throw/500.
+  if (!isUuid(experimentId)) return false;
   if (!["control", "A", "B"].includes(variant)) return false;
+  if (type !== "exposure" && type !== "click") return false;
   const running = await exec.rows<{ id: string }>(
     `SELECT id FROM ab_experiment WHERE shop_id=$1::uuid AND id=$2::uuid AND status='running'`,
     [shopId, experimentId],

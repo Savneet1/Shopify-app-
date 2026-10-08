@@ -22,6 +22,7 @@
     "inputSelector": {{ block.settings.input_selector | default: 'form[action*="/search"] input[name="q"]' | json }},
     "proxyBase": {{ '/' | append: prefix | append: '/' | append: subpath | json }},
     "allowedHosts": [{{ shop.permanent_domain | json }}, {{ shop.domain | json }}],
+    "abTesting": {{ block.settings.ab_testing | default: true | json }},
     "timeoutMs": {{ block.settings.timeout_ms | default: 2000 | json }},
     "debounceMs": {{ block.settings.debounce_ms | default: 150 | json }},
     "labels": {
@@ -79,6 +80,13 @@
       "step": 50,
       "unit": "ms",
       "default": 150
+    },
+    {
+      "type": "checkbox",
+      "id": "ab_testing",
+      "label": "t:boost.settings.ab_testing.label",
+      "info": "t:boost.settings.ab_testing.info",
+      "default": true
     },
     {
       "type": "color",

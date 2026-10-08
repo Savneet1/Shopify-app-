@@ -87,10 +87,18 @@ merch rules tagged `variant` 'A'/'B' apply only when their experiment is running
 and the visitor is in that variant; untagged rules are always-on. **Assignment**
 is deterministic: `fnv1a32(shopId:experimentId:token) % 100 < splitPct → B else
 A`; **no token → control** (the default rule set). The storefront generates a
-random anonymous token in first-party storage (try/catch; a blocked store yields
-control) — no PII, no IP, no fingerprinting. **Shopify customer-privacy consent
-gating is Requires Verification** (default to control when consent is
-unknown/unavailable). Only **aggregate** exposure/click counts per variant are
+random anonymous token in first-party storage, **gated on analytics consent**
+(Phase 8.1): the token is only created or read when the merchant A/B toggle is on
+AND `Core.consentAllowsAnalytics(window.Shopify.customerPrivacy)` returns strictly
+true (fail-closed — absent API / missing method / non-true / throw → control);
+the token is created lazily (only after a running experiment is seen, so the
+first view is control) and deleted when consent is absent or withdrawn
+(`visitorConsentCollected`). No PII, no IP, no fingerprinting. The **exact
+customer-privacy API method names/behaviour are Requires Verification** on a real
+store; failing closed means a wrong guess only ever yields control, never
+tracking. The token is bounded to 1..64 chars of `[A-Za-z0-9_-]` at the client
+and re-validated server-side (`sanitizeToken`). Only **aggregate** exposure/click
+counts per variant are
 recorded (`ab_exposure`); no per-user rows, no logged queries. **Stopping an
 experiment restores the default rule set immediately** (variant rules become
 inert the moment status != 'running'). Conversion/revenue and significance are
@@ -125,9 +133,34 @@ rendered as text, javascript:/data:/protocol-relative links rejected by the
 allowlist, invalid schedules rejected); determinism (same input + same `now` →
 same output); never worse than Phase 6.1b (empty plan → unchanged output).
 
+## Pin order (not absolute slots)
+
+`position` is a **pin order** (1 = first among pinned products); pinned products
+always appear at the top of the relevance results, ordered by `position` then
+priority then rule id. Pinning a product to an **absolute Nth slot** (e.g. always
+3rd overall) is **NOT implemented** — true slot positioning is not cheap or exact
+under pagination + filters (it needs absolute offset insertion with gap handling
+when fewer products match), so Phase 8 keeps the honest, stable relative order. A
+lone pin with order 5 therefore appears first, not in slot 5.
+
+## Known limitations (Phase 8.1)
+
+- **The A/B beacon endpoint is public.** The App Proxy signature only proves a
+  request came through the shop's proxy, not that a real exposure/click happened.
+  A malicious visitor can inflate `ab_exposure` counters, and they cannot be
+  de-duplicated without per-user data (which we deliberately do not store).
+  Per-shop rate limiting applies (shared storefront limiter). **Treat experiment
+  numbers as advisory** until Phase 11 analytics.
+- **Banner title/body are stored and returned as raw text** (not HTML-escaped).
+  Every renderer MUST use `textContent` / React text nodes — the storefront block
+  does. Do not inject banner text as HTML anywhere.
+- **`loadMerchPlan` adds a few queries per search/predictive request** (running
+  experiments, active rules + targets, target resolution). Not measured —
+  performance is Phase 14.
+
 ## Requires Verification
 
-- Shopify customer-privacy / consent API gating of the anonymous A/B token
-  (default is control when unknown).
+- The exact Shopify customer-privacy API method names/behaviour behind
+  `consentAllowsAnalytics` (fail-closed → control on any uncertainty).
 - Live storefront beacon delivery (sendBeacon) and the admin deep-link flows.
 - Conversion / revenue attribution and statistical significance (Phase 11).
