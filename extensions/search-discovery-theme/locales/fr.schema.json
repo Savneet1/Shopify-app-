@@ -1,0 +1,22 @@
+{
+  "boost": {
+    "settings": {
+      "input_selector": {
+        "label": "Sélecteur CSS du champ de recherche",
+        "info": "Le champ de recherche du thème. La valeur par défaut convient à la plupart des thèmes (dont Dawn)."
+      },
+      "proxy_prefix": { "label": "Préfixe App Proxy" },
+      "proxy_subpath": { "label": "Sous-chemin App Proxy" },
+      "timeout_ms": { "label": "Délai d'expiration" },
+      "debounce_ms": { "label": "Anti-rebond de saisie" },
+      "per_page": { "label": "Résultats par page" },
+      "nl_enabled": { "label": "Analyse en langage naturel" },
+      "metafield_key": {
+        "label": "Clé de facette metafield",
+        "info": "La clé de facette metafield configurée (par défaut : material)."
+      },
+      "accent_bg": { "label": "Arrière-plan d'accentuation" },
+      "focus_color": { "label": "Couleur du contour de focus" }
+    }
+  }
+}

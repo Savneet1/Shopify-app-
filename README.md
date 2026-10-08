@@ -2,8 +2,8 @@
 
 A production-grade, multi-tenant Shopify **Search, Filter & Discovery** app built
 on the current official **Shopify React Router** template, with PostgreSQL as the
-only data/search engine. This repository is at **Phase 6.1b (fix batch on the
-Semantic Layer / NL Query Parser)**.
+only data/search engine. This repository is at **Phase 7 (Storefront / Theme App
+Extension)**.
 
 > Phase gating is enforced. Implemented so far: Phase 1 (foundation: auth,
 > embedded shell, multi-tenancy + RLS, privacy webhooks, billing), Phase 2/2.1
@@ -14,8 +14,10 @@ Semantic Layer / NL Query Parser)**.
 > thousands/`~`/`between` price parsing + year/unit guards, case-insensitive
 > live attribute values, negation transparency, control-character safety),
 > Phase 6.1b (all-casings facet resolution, malformed-grouping guard,
-> ambiguous-cue gate). Merchandising/recommendations/
-> theme extension/etc. are later phases. See `docs/PHASE*.md`. Stack unchanged:
+> ambiguous-cue gate), Phase 7 (theme app extension: app embed predictive search
+> + search-results app block, proxy-only storefront JS with native fallback, URL
+> state, mobile, WCAG 2.1 AA, admin install/status page). Merchandising/
+> recommendations/analytics/etc. are later phases. See `docs/PHASE*.md`. Stack unchanged:
 > no Redis, no external search/AI, PostgreSQL-only; scopes = `read_products`.
 
 ## Stack (Phase 1)

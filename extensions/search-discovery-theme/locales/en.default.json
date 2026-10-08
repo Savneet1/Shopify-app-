@@ -1,0 +1,33 @@
+{
+  "boost": {
+    "predictive": {
+      "listbox_label": "Search suggestions",
+      "results_available": "results available",
+      "no_results": "No results"
+    },
+    "results": {
+      "filters": "Filters",
+      "results": "results",
+      "sort_by": "Sort by",
+      "sort_relevance": "Relevance",
+      "sort_price_asc": "Price: low to high",
+      "sort_price_desc": "Price: high to low",
+      "sort_newest": "Newest",
+      "interpreted_as": "Interpreted as",
+      "remove": "Remove",
+      "fell_back": "Simplified to plain search",
+      "showing_for": "Showing results for",
+      "out_of_stock": "Out of stock",
+      "no_products": "No products matched.",
+      "try_instead": "Try one of these",
+      "prev": "Previous",
+      "next": "Next",
+      "page": "Page",
+      "pagination": "Pagination",
+      "loading": "Loading results…",
+      "unavailable": "Search is temporarily unavailable.",
+      "use_native": "Use standard search",
+      "noscript": "Enable JavaScript to use enhanced search, or use your browser's standard search."
+    }
+  }
+}

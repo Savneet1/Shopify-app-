@@ -182,11 +182,36 @@ Rule-based + deterministic. See `docs/PHASE6_1.md` §"Phase 6.1b".
 Still no migration, schema change, or new indexed field. Benchmarks remain
 **Phase 14**.
 
+## Phase 7 — Storefront / Theme App Extension (Implemented; live store/theme = Requires Verification)
+
+Third-party services / scopes / deps / extensions / migrations added: **none**.
+Docs verification: `docs/PHASE7.md`. Theme compat: `docs/PHASE7_THEME_COMPAT.md`.
+Report: `docs/PHASE7_REPORT.md`.
+
+| ID | Feature | Status | Class | Tests | Location |
+|---|---|---|---|---|---|
+| F7.0 | Shopify docs verification (TAE, OS2.0 JSON templates, app proxy from JS, `/search`, vintage limits) with Verified/Requires-Verification marks | Implemented | docs | — | `docs/PHASE7.md` |
+| F7.1 | Theme app extension: app embed (predictive) + search-results app block (grid/facets/sort/pagination/interpreted-as chips w/ remove/typo indicator/negation warning/zero-result suggestions/redirect); settings schema; locales en+fr + parity script | Implemented | FULLY (logic) / Requires Verification (live theme) | `phase7-core` | `extensions/search-discovery-theme/*`, `scripts/check-locale-parity.mjs` |
+| F7.2 | Storefront JS: proxy-only, AbortController ~2s timeout + native fallback, additive/no-framework/no-dep | Implemented | FULLY (logic) / RV (DOM) | `phase7-core` | `assets/boost-core.js`, `boost-predictive.js`, `boost-results.js` |
+| F7.3 | URL state (q/filters/sort/page/nl/ignore), shareable, back/forward, bounded+validated | Implemented | FULLY | `phase7-core` | `boost-core.js` (parse/serialize) |
+| F7.4 | Mobile: responsive grid, filter drawer, ≥44px targets, no horizontal scroll | Implemented | RV (DOM) | — | `assets/boost.css`, `boost-results.js` |
+| F7.5 | Accessibility WCAG 2.1 AA: ARIA combobox, keyboard, live region, focus mgmt, reduced-motion, no color-only meaning | Implemented | FULLY (logic) / RV (AT) | `phase7-core` | `boost-core.js` (comboboxKey), `boost-*.js`, `boost.css` |
+| F7.6 | Security: textContent-only rendering, same-origin URL validation, CSP-friendly, no secrets/PII | Implemented | FULLY (logic) | `phase7-core` | `boost-core.js` (isSafeUrl), glue |
+| F7.7 | Theme compat: Dawn + Refresh + Craft selector defaults; vintage investigation + manual install | Implemented | RV (live theme) | — | `docs/PHASE7_THEME_COMPAT.md` |
+| F7.8 | Admin install/status page: deep links + index/proxy status check; no new scope | Implemented | FULLY (status) / RV (deep link live) | — | `app/routes/app.storefront.tsx` |
+| F7.9 | Tests (node, no DOM dep): URL state incl. hostile, ARIA/keyboard, escaping+URL validation, timeout→fallback, locale parity, extension schema/liquid static checks | Implemented | FULLY | `phase7-core` | `test/phase7-core.test.ts` |
+
+Correction: `app/routes.ts` (explicit table) now registers the App Proxy
+endpoints and the Phase 3–6 admin pages (previously present but unregistered),
+plus the new `app.storefront` page — wiring only, no new feature/scope. DOM,
+live-store, live-theme and deep-link behaviors are **Requires Verification**.
+Benchmarks remain **Phase 14**.
+
 ## Later phases (Planned — preserved, not implemented)
 
 | ID | Area | Status | Phase | Notes / class |
 |---|---|---|---|---|
-| F7 | Theme App Extension, mobile, URL state, a11y, Dawn + 2 themes, vintage investigation | Planned | 7 | Progressive enhancement; native search must survive app outage. |
+| F7 | Theme App Extension, mobile, URL state, a11y, Dawn + 2 themes, vintage investigation | **Implemented** | 7 | See the Phase 7 section above. Progressive enhancement; native search survives app outage. Live store/theme = Requires Verification. |
 | F8 | Merchandising (pin/boost/demote/hide/banners/schedule) + A/B testing | Planned | 8 | FULLY. |
 | F9 | Recommendations (similar/related/FBT/trending/…); personalization | Planned | 9 | Own algorithms + PostgreSQL. `read_orders`/protected data = **Requires Verification**. |
 | F10 | Bundles | Planned | 10 | Certain bundle discounts require **Shopify Functions** — Requires Verification. |

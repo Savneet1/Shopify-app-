@@ -1,0 +1,6 @@
+# Phase 7 — theme app extension for the Search, Filter & Discovery app.
+# type = "theme" is required and constant for a theme app extension.
+# No access scope is introduced by this extension (verified in docs/PHASE7.md §9).
+name = "Search & Discovery storefront"
+type = "theme"
+handle = "search-discovery-theme"

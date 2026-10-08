@@ -1,0 +1,33 @@
+{
+  "boost": {
+    "predictive": {
+      "listbox_label": "Suggestions de recherche",
+      "results_available": "résultats disponibles",
+      "no_results": "Aucun résultat"
+    },
+    "results": {
+      "filters": "Filtres",
+      "results": "résultats",
+      "sort_by": "Trier par",
+      "sort_relevance": "Pertinence",
+      "sort_price_asc": "Prix : croissant",
+      "sort_price_desc": "Prix : décroissant",
+      "sort_newest": "Nouveautés",
+      "interpreted_as": "Interprété comme",
+      "remove": "Retirer",
+      "fell_back": "Recherche simplifiée",
+      "showing_for": "Résultats pour",
+      "out_of_stock": "Épuisé",
+      "no_products": "Aucun produit trouvé.",
+      "try_instead": "Essayez l'un de ceux-ci",
+      "prev": "Précédent",
+      "next": "Suivant",
+      "page": "Page",
+      "pagination": "Pagination",
+      "loading": "Chargement des résultats…",
+      "unavailable": "La recherche est momentanément indisponible.",
+      "use_native": "Utiliser la recherche standard",
+      "noscript": "Activez JavaScript pour la recherche améliorée, ou utilisez la recherche standard de votre navigateur."
+    }
+  }
+}

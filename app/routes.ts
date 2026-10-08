@@ -11,7 +11,24 @@ export default [
   route("app", "routes/app.tsx", [
     index("routes/app._index.tsx"),
     route("sync", "routes/app.sync.tsx"),
+    // Phase 7: storefront install & status page.
+    route("storefront", "routes/app.storefront.tsx"),
+    // Admin feature pages (Phases 3–6). These files existed but were not
+    // registered here; Phase 7 wires them so they are reachable (see
+    // docs/PHASE7_REPORT.md "Corrections").
+    route("search", "routes/app.search.tsx"),
+    route("attributes", "routes/app.attributes.tsx"),
+    route("redirects", "routes/app.redirects.tsx"),
+    route("stopwords", "routes/app.stopwords.tsx"),
+    route("synonyms", "routes/app.synonyms.tsx"),
   ]),
+
+  // App Proxy storefront endpoints (Phase 3). Shopify proxies
+  // /apps/search/{products|predictive|suggest} to /proxy/{...}. These were also
+  // unregistered before Phase 7; the storefront extension depends on them.
+  route("proxy/products", "routes/proxy.products.tsx"),
+  route("proxy/predictive", "routes/proxy.predictive.tsx"),
+  route("proxy/suggest", "routes/proxy.suggest.tsx"),
 
   // Webhooks.
   route("webhooks/app/uninstalled", "routes/webhooks.app.uninstalled.tsx"),

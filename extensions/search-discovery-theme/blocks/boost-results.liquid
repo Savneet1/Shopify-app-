@@ -1,0 +1,133 @@
+{%- comment -%}
+  Phase 7 APP BLOCK — search results (grid + facets + sort + pagination +
+  interpreted-as chips + typo indicator + negation warning + zero-result
+  suggestions + redirect handling). target = section (needs an OS2.0 JSON
+  template whose section accepts @app — e.g. search.json / collection.json).
+  Renders ALONGSIDE the theme's native results; never replaces theme routing.
+  Additive: if JS fails, a link to the native /search is shown.
+{%- endcomment -%}
+
+{%- liquid
+  assign prefix = block.settings.proxy_prefix | default: 'apps'
+  assign subpath = block.settings.proxy_subpath | default: 'search'
+-%}
+
+<div
+  class="boost-results"
+  style="--boost-accent-bg: {{ block.settings.accent_bg | default: '#eef1ff' }}; --boost-focus: {{ block.settings.focus_color | default: '#1a56db' }};"
+>
+  <button
+    type="button"
+    id="boost-filter-toggle"
+    class="boost-filter-toggle"
+    aria-controls="boost-results-root"
+    aria-expanded="false"
+  >{{ 'boost.results.filters' | t }}</button>
+
+  <div id="boost-results-root" class="boost-results__root">
+    <noscript>{{ 'boost.results.noscript' | t }}</noscript>
+  </div>
+</div>
+
+<script type="application/json" id="boost-results-config">
+  {
+    "proxyBase": {{ '/' | append: prefix | append: '/' | append: subpath | json }},
+    "searchUrl": {{ routes.search_url | default: '/search' | json }},
+    "perPage": {{ block.settings.per_page | default: 24 | json }},
+    "nlEnabled": {{ block.settings.nl_enabled | default: true | json }},
+    "metafieldKey": {{ block.settings.metafield_key | default: 'material' | json }},
+    "timeoutMs": {{ block.settings.timeout_ms | default: 2000 | json }},
+    "labels": {
+      "filters": {{ 'boost.results.filters' | t | json }},
+      "results": {{ 'boost.results.results' | t | json }},
+      "sortBy": {{ 'boost.results.sort_by' | t | json }},
+      "sortRelevance": {{ 'boost.results.sort_relevance' | t | json }},
+      "sortPriceAsc": {{ 'boost.results.sort_price_asc' | t | json }},
+      "sortPriceDesc": {{ 'boost.results.sort_price_desc' | t | json }},
+      "sortNewest": {{ 'boost.results.sort_newest' | t | json }},
+      "interpretedAs": {{ 'boost.results.interpreted_as' | t | json }},
+      "remove": {{ 'boost.results.remove' | t | json }},
+      "fellBack": {{ 'boost.results.fell_back' | t | json }},
+      "showingFor": {{ 'boost.results.showing_for' | t | json }},
+      "outOfStock": {{ 'boost.results.out_of_stock' | t | json }},
+      "noProducts": {{ 'boost.results.no_products' | t | json }},
+      "tryInstead": {{ 'boost.results.try_instead' | t | json }},
+      "prev": {{ 'boost.results.prev' | t | json }},
+      "next": {{ 'boost.results.next' | t | json }},
+      "page": {{ 'boost.results.page' | t | json }},
+      "pagination": {{ 'boost.results.pagination' | t | json }},
+      "loading": {{ 'boost.results.loading' | t | json }},
+      "unavailable": {{ 'boost.results.unavailable' | t | json }},
+      "useNative": {{ 'boost.results.use_native' | t | json }}
+    }
+  }
+</script>
+
+<link rel="stylesheet" href="{{ 'boost.css' | asset_url }}">
+<script src="{{ 'boost-core.js' | asset_url }}" defer></script>
+<script src="{{ 'boost-results.js' | asset_url }}" defer></script>
+
+{% schema %}
+{
+  "name": "Search results",
+  "target": "section",
+  "settings": [
+    {
+      "type": "text",
+      "id": "proxy_prefix",
+      "label": "t:boost.settings.proxy_prefix.label",
+      "default": "apps"
+    },
+    {
+      "type": "text",
+      "id": "proxy_subpath",
+      "label": "t:boost.settings.proxy_subpath.label",
+      "default": "search"
+    },
+    {
+      "type": "range",
+      "id": "per_page",
+      "label": "t:boost.settings.per_page.label",
+      "min": 6,
+      "max": 48,
+      "step": 6,
+      "default": 24
+    },
+    {
+      "type": "checkbox",
+      "id": "nl_enabled",
+      "label": "t:boost.settings.nl_enabled.label",
+      "default": true
+    },
+    {
+      "type": "text",
+      "id": "metafield_key",
+      "label": "t:boost.settings.metafield_key.label",
+      "info": "t:boost.settings.metafield_key.info",
+      "default": "material"
+    },
+    {
+      "type": "range",
+      "id": "timeout_ms",
+      "label": "t:boost.settings.timeout_ms.label",
+      "min": 500,
+      "max": 5000,
+      "step": 250,
+      "unit": "ms",
+      "default": 2000
+    },
+    {
+      "type": "color",
+      "id": "accent_bg",
+      "label": "t:boost.settings.accent_bg.label",
+      "default": "#eef1ff"
+    },
+    {
+      "type": "color",
+      "id": "focus_color",
+      "label": "t:boost.settings.focus_color.label",
+      "default": "#1a56db"
+    }
+  ]
+}
+{% endschema %}

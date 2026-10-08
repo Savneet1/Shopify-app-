@@ -1,0 +1,96 @@
+{%- comment -%}
+  Phase 7 APP EMBED BLOCK — predictive search.
+  Enhances the theme's EXISTING search input with an accessible predictive
+  dropdown. Additive: if JS is blocked/fails, the native search form still works.
+  Talks only to the existing App Proxy. target = body (works on vintage + OS2.0).
+{%- endcomment -%}
+
+{%- liquid
+  assign prefix = block.settings.proxy_prefix | default: 'apps'
+  assign subpath = block.settings.proxy_subpath | default: 'search'
+-%}
+
+<style>
+  :root {
+    --boost-accent-bg: {{ block.settings.accent_bg | default: '#eef1ff' }};
+    --boost-focus: {{ block.settings.focus_color | default: '#1a56db' }};
+  }
+</style>
+
+<script type="application/json" id="boost-predictive-config">
+  {
+    "inputSelector": {{ block.settings.input_selector | default: 'form[action*="/search"] input[name="q"]' | json }},
+    "proxyBase": {{ '/' | append: prefix | append: '/' | append: subpath | json }},
+    "timeoutMs": {{ block.settings.timeout_ms | default: 2000 | json }},
+    "debounceMs": {{ block.settings.debounce_ms | default: 150 | json }},
+    "labels": {
+      "predictiveLabel": {{ 'boost.predictive.listbox_label' | t | json }},
+      "resultsAvailable": {{ 'boost.predictive.results_available' | t | json }},
+      "noResults": {{ 'boost.predictive.no_results' | t | json }}
+    }
+  }
+</script>
+
+<link rel="stylesheet" href="{{ 'boost.css' | asset_url }}">
+<script src="{{ 'boost-core.js' | asset_url }}" defer></script>
+<script src="{{ 'boost-predictive.js' | asset_url }}" defer></script>
+
+{% schema %}
+{
+  "name": "Predictive search",
+  "target": "body",
+  "settings": [
+    {
+      "type": "text",
+      "id": "input_selector",
+      "label": "t:boost.settings.input_selector.label",
+      "info": "t:boost.settings.input_selector.info",
+      "default": "form[action*=\"/search\"] input[name=\"q\"]"
+    },
+    {
+      "type": "text",
+      "id": "proxy_prefix",
+      "label": "t:boost.settings.proxy_prefix.label",
+      "default": "apps"
+    },
+    {
+      "type": "text",
+      "id": "proxy_subpath",
+      "label": "t:boost.settings.proxy_subpath.label",
+      "default": "search"
+    },
+    {
+      "type": "range",
+      "id": "timeout_ms",
+      "label": "t:boost.settings.timeout_ms.label",
+      "min": 500,
+      "max": 5000,
+      "step": 250,
+      "unit": "ms",
+      "default": 2000
+    },
+    {
+      "type": "range",
+      "id": "debounce_ms",
+      "label": "t:boost.settings.debounce_ms.label",
+      "min": 0,
+      "max": 600,
+      "step": 50,
+      "unit": "ms",
+      "default": 150
+    },
+    {
+      "type": "color",
+      "id": "accent_bg",
+      "label": "t:boost.settings.accent_bg.label",
+      "default": "#eef1ff"
+    },
+    {
+      "type": "color",
+      "id": "focus_color",
+      "label": "t:boost.settings.focus_color.label",
+      "default": "#1a56db"
+    }
+  ]
+}
+{% endschema %}

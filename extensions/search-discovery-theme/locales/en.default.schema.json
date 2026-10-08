@@ -1,0 +1,22 @@
+{
+  "boost": {
+    "settings": {
+      "input_selector": {
+        "label": "Search input CSS selector",
+        "info": "The theme's search box. Default matches most themes (Dawn included)."
+      },
+      "proxy_prefix": { "label": "App Proxy prefix" },
+      "proxy_subpath": { "label": "App Proxy subpath" },
+      "timeout_ms": { "label": "Request timeout" },
+      "debounce_ms": { "label": "Typing debounce" },
+      "per_page": { "label": "Results per page" },
+      "nl_enabled": { "label": "Natural-language parsing" },
+      "metafield_key": {
+        "label": "Metafield facet key",
+        "info": "The configured metafield facet key (default: material)."
+      },
+      "accent_bg": { "label": "Accent background" },
+      "focus_color": { "label": "Focus outline color" }
+    }
+  }
+}
