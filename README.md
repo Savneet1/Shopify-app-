@@ -2,8 +2,8 @@
 
 A production-grade, multi-tenant Shopify **Search, Filter & Discovery** app built
 on the current official **Shopify React Router** template, with PostgreSQL as the
-only data/search engine. This repository is at **Phase 8.1 (Merchandising + A/B
-testing, hardening fix batch)**.
+only data/search engine. This repository is at **Phase 8.1b (Merchandising + A/B
+testing; checkbox-toggle fix)**.
 
 > Phase gating is enforced. Implemented so far: Phase 1 (foundation: auth,
 > embedded shell, multi-tenancy + RLS, privacy webhooks, billing), Phase 2/2.1
@@ -19,7 +19,8 @@ testing, hardening fix batch)**.
 > state, mobile, WCAG 2.1 AA, admin install/status page), Phase 8 (merchandising
 > rules pin/boost/demote/hide + scheduling, banners, deterministic A/B testing —
 > all inside the one query planner), Phase 8.1 (consent-gated A/B token, public
-> beacon + token hardening, pin-order honesty). Recommendations/analytics/etc.
+> beacon + token hardening, pin-order honesty), Phase 8.1b (merchant checkbox
+> toggles honour an unchecked box). Recommendations/analytics/etc.
 > are later phases. See `docs/PHASE*.md`. Stack unchanged:
 > no Redis, no external search/AI, PostgreSQL-only; scopes = `read_products`.
 

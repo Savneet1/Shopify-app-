@@ -164,3 +164,8 @@ lone pin with order 5 therefore appears first, not in slot 5.
   `consentAllowsAnalytics` (fail-closed → control on any uncertainty).
 - Live storefront beacon delivery (sendBeacon) and the admin deep-link flows.
 - Conversion / revenue attribution and statistical significance (Phase 11).
+- Merchant checkbox toggles (`nl_enabled`, `show_banners`, `ab_testing`) are
+  rendered with an explicit `{% if … == false %}` so an unchecked box disables
+  the feature (Phase 8.1b — the `| default: true` filter had overridden a false
+  value). The actual on/off behaviour on a real theme is **Requires
+  Verification**.

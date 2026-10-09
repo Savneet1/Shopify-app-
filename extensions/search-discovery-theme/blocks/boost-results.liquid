@@ -37,9 +37,9 @@
     "imageHosts": ["cdn.shopify.com", {{ shop.permanent_domain | json }}, {{ shop.domain | json }}],
     "currency": {{ shop.currency | json }},
     "perPage": {{ block.settings.per_page | default: 24 | json }},
-    "nlEnabled": {{ block.settings.nl_enabled | default: true | json }},
-    "banners": {{ block.settings.show_banners | default: true | json }},
-    "abTesting": {{ block.settings.ab_testing | default: true | json }},
+    "nlEnabled": {% if block.settings.nl_enabled == false %}false{% else %}true{% endif %},
+    "banners": {% if block.settings.show_banners == false %}false{% else %}true{% endif %},
+    "abTesting": {% if block.settings.ab_testing == false %}false{% else %}true{% endif %},
     "metafieldKey": {{ block.settings.metafield_key | default: 'material' | json }},
     "timeoutMs": {{ block.settings.timeout_ms | default: 2000 | json }},
     "labels": {

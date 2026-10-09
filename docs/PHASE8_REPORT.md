@@ -174,3 +174,37 @@ appears first). No prior assertion weakened. `typecheck` 0; `build` OK;
 STATUS: PHASE 8.1 IMPLEMENTED & PG-VERIFIED (284 passed | 7 skipped). LIVE-PRISMA
 CONFIRMATION PENDING. PHASE 9 NOT STARTED. AWAITING LIVE-PRISMA RUN AND EXPLICIT
 USER APPROVAL.
+
+---
+
+# Phase 8.1b — one fix (J1)
+
+**Merchant checkbox toggles could never be switched off.** The block config was
+written `{{ block.settings.X | default: true | json }}`; Shopify Liquid's
+`default` filter also replaces a FALSE value (unless `allow_false: true`), so an
+unchecked box still emitted `true` and the feature could not be disabled. This
+affected `nl_enabled` (since Phase 7), `show_banners` and `ab_testing` in
+`boost-results.liquid`, and `ab_testing` in `boost-predictive.liquid`.
+
+**Fix:** each of the four now renders through an explicit, filter-independent
+form — `{% if block.settings.X == false %}false{% else %}true{% endif %}` — which
+treats only an UNSET (nil) setting as the default and honours an explicit false.
+No other behaviour changed. The actual on/off behaviour on a real theme is noted
+**Requires Verification** in `docs/PHASE8.md`.
+
+**Tests (static, node):** new `test/phase8b-liquid-booleans.test.ts` (4) parses
+each block's `{% schema %}`, finds the checkbox setting ids, and fails if any is
+rendered through `| default: true|false` without `allow_false: true`; asserts the
+four known settings use the explicit if/else form; plus a global sweep that no
+`| default:` is applied to any checkbox id. The consent static checks and locale
+parity still pass.
+
+## Tests vs 284
+
+Full suite: **288 passed | 7 skipped (295)**. **+4** (all in
+`phase8b-liquid-booleans`). No prior assertion weakened. `typecheck` 0; `build`
+OK; `worker:build` OK. No performance numbers.
+
+STATUS: PHASE 8.1b IMPLEMENTED & PG-VERIFIED (288 passed | 7 skipped). LIVE-PRISMA
+CONFIRMATION PENDING. PHASE 9 NOT STARTED. AWAITING LIVE-PRISMA RUN AND EXPLICIT
+USER APPROVAL.
