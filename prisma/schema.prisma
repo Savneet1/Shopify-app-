@@ -7,6 +7,12 @@
 // tables. Filter / merchandising / analytics tables remain DEFERRED to their
 // phases (see docs/FEATURE_MATRIX.md).
 //
+// Phase 5/6/8/9 feature tables (search vocabulary/synonyms/…, merchandising +
+// A/B, and recommendations: product_signal_daily, product_cooccurrence,
+// product_cooccurrence_build, recommendation_settings) are accessed exclusively
+// through raw parameterised SQL under withShop (RLS), NOT the Prisma client, so
+// they are intentionally not modelled here. Their DDL lives in the migrations.
+//
 // Two database roles are used (see prisma/migrations/0002_rls_roles):
 //   DATABASE_URL        -> app_runtime (NOSUPERUSER, NOBYPASSRLS) at runtime
 //   DIRECT_DATABASE_URL -> app_owner (owns tables, runs migrations)

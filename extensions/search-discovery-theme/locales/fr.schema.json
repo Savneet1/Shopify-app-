@@ -21,7 +21,17 @@
         "info": "La clé de facette metafield configurée (par défaut : material)."
       },
       "accent_bg": { "label": "Arrière-plan d'accentuation" },
-      "focus_color": { "label": "Couleur du contour de focus" }
+      "focus_color": { "label": "Couleur du contour de focus" },
+      "recs_heading": { "label": "Titre" },
+      "recs_type": { "label": "Type de recommandation" },
+      "recs_count": { "label": "Nombre de produits" },
+      "recs_columns": { "label": "Colonnes" },
+      "recs_show_price": { "label": "Afficher le prix" },
+      "recs_show_vendor": { "label": "Afficher le fournisseur" },
+      "recs_track_recent": {
+        "label": "Mémoriser les produits consultés (ce navigateur)",
+        "info": "Stocke les produits récemment consultés dans le navigateur du client, uniquement après consentement analytique. Jamais envoyé ni stocké sur le serveur."
+      }
     }
   }
 }

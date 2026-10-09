@@ -107,3 +107,26 @@
 @media (prefers-reduced-motion: reduce) {
   .boost-facets { transition: none; }
 }
+
+/* Phase 9 — recommendations shelf (additive; renders only once populated). */
+.boost-recs { margin: 28px 0; }
+.boost-recs__heading { font-size: 1.25rem; margin: 0 0 12px; }
+.boost-recs__grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+}
+@media (min-width: 750px) {
+  .boost-recs__grid { grid-template-columns: repeat(var(--boost-recs-cols, 4), 1fr); }
+}
+.boost-recs__card {
+  display: block; text-decoration: none; color: inherit;
+  border: 1px solid #ececec; border-radius: 8px; padding: 10px; background: #fff;
+}
+a.boost-recs__card:hover { border-color: var(--boost-focus, #1a56db); }
+a.boost-recs__card:focus-visible { outline: 2px solid var(--boost-focus, #1a56db); outline-offset: 2px; }
+.boost-recs__img { width: 100%; height: auto; aspect-ratio: 1 / 1; object-fit: cover; border-radius: 6px; background: #f6f6f6; }
+.boost-recs__title { font-weight: 600; margin-top: 8px; font-size: .95rem; }
+.boost-recs__vendor { color: #666; font-size: .8rem; margin-top: 2px; }
+.boost-recs__price { margin-top: 4px; font-size: .9rem; }
+.boost-recs__oos { color: #a15c00; font-size: .78rem; margin-top: 4px; }

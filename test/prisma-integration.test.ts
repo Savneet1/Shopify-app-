@@ -12,6 +12,8 @@ import { storefrontSearch } from "~/lib/search/storefront";
 import { addSynonym } from "~/lib/search/synonyms";
 import { claimWebhook, markWebhookProcessed } from "~/lib/webhooks/receipt.server";
 import { sha256Hex } from "~/lib/webhooks/hmac.server";
+import { getRecommendations } from "~/lib/recommend/engine";
+import { recordSignal } from "~/lib/recommend/signals";
 
 /**
  * Prisma reality check (#4a): exercise the PRODUCTION data path — runFullSync +
@@ -241,5 +243,48 @@ describe("Prisma-backed integration (production withShopExec path)", () => {
       else throw e;
     }
     expect(status).toBe(400); // invalid/absent proxy signature
+  });
+
+  it("Phase 9 recommendations (content + trending) via the production Prisma path", async (ctx) => {
+    if (!prismaOk) return ctx.skip();
+    const shopId = await resolveShopId("shop-a.myshopify.com");
+    await withShopExec(shopId, async (e) => {
+      for (const [n, title] of [["900", "Alpha Widget"], ["901", "Beta Widget"], ["902", "Gamma Widget"]] as const) {
+        const { id } = await upsertProduct(e, shopId, {
+          shopifyProductGid: `gid://shopify/Product/${n}`, title, handle: n, vendor: "Acme", productType: "Widget",
+          tags: ["w"], status: "ACTIVE", onlineStoreUrl: `https://shop.test/products/${n}`, productCreatedAt: "2024-05-01T00:00:00Z",
+        });
+        await upsertVariant(e, shopId, id, { shopifyVariantGid: `gid://shopify/ProductVariant/${n}1`, sku: `W-${n}`, price: "10", availableForSale: true });
+      }
+    });
+    const v = await withShopExec(shopId, (e) => createIndexVersion(e, shopId, "full", 3));
+    await withShopExec(shopId, (e) => buildDocs(e, shopId, v.id));
+    await withShopExec(shopId, (e) => validateIndexVersion(e, shopId, v.id, 3));
+    await withShopExec(shopId, (e) => activateIndexVersion(e, shopId, v.id));
+
+    const sim = await withShopExec(shopId, (e) => getRecommendations(e, shopId, { type: "similar", seed: "gid://shopify/Product/900", limit: 12 }));
+    expect(sim.products.length).toBeGreaterThan(0);
+    expect(sim.products.find((p) => p.gid === "gid://shopify/Product/900")).toBeUndefined();
+
+    await withShopExec(shopId, (e) => recordSignal(e, shopId, v.id, "gid://shopify/Product/901", "click"));
+    const tr = await withShopExec(shopId, (e) => getRecommendations(e, shopId, { type: "trending", limit: 3 }));
+    expect(tr.products[0].gid).toBe("gid://shopify/Product/901");
+  });
+
+  it("unsigned recommendations / rec-event App Proxy requests -> HTTP 400", async (ctx) => {
+    if (!prismaOk) return ctx.skip();
+    for (const path of ["proxy.recommendations", "proxy.rec-event"]) {
+      const mod: any = await import(`~/routes/${path}`);
+      const req = new Request(`https://app.example.com/${path.replace(".", "/")}?type=similar&seed=x&shop=shop-a.myshopify.com`);
+      let status = 0;
+      try {
+        const res: any = await mod.loader({ request: req, params: {}, context: {} });
+        status = res && typeof res.status === "number" ? res.status : 0;
+      } catch (e: any) {
+        if (e instanceof Response) status = e.status;
+        else throw e;
+      }
+      expect(status, path).toBe(400);
+    }
   });
 });

@@ -226,13 +226,35 @@ Consent gating (Shopify customer-privacy API), live beacons, deep-link flows and
 conversion/revenue/significance (Phase 11) are **Requires Verification**.
 Benchmarks remain **Phase 14**.
 
+## Phase 9 — Recommendations (Implemented; Prisma execution pg-verified)
+
+Third-party services / scopes / deps / extensions added: **none**. Migration
+`0011_phase9_recommendations` (4 tenant tables: `product_signal_daily`,
+`product_cooccurrence`, `product_cooccurrence_build`, `recommendation_settings`;
+RLS enabled+forced; grants to `app_runtime` only). Rule-based/deterministic; no
+ML, no embeddings, no per-shopper server profiles. Reads ONLY the active index
+version's visible docs. Docs: `docs/PHASE9.md`, report `docs/PHASE9_REPORT.md`.
+
+| ID | Feature | Status | Class | Tests | Location |
+|---|---|---|---|---|---|
+| F9.1 | Content-based "similar"/"related" in one SQL over visible docs (shared collections, product_type, vendor, shared tags, price-band, title trigram); documented weights; deterministic tie-break (score,title,id); seed excluded; OOS policy; Phase 8 global hide respected; cap ≤24; optional per-vendor diversification; unknown/unpublished seed → [] | Implemented | FULLY | `phase9-content` | `app/lib/recommend/content.ts`, `refs.ts` |
+| F9.2 | Trending: aggregate `product_signal_daily` (views/clicks, per UTC day) via a hardened PUBLIC beacon (`proxy/rec-event`: validate before SQL, bounded, never 500, aggregate only — no visitor/IP/per-user/query log); time-decayed score with documented half-life + injected clock; newest-visible deterministic fallback/top-up; beacon is public/inflatable → advisory | Implemented | FULLY (engine) / RV (live beacon) | `phase9-signals` | `app/lib/recommend/signals.ts`, `proxy.rec-event.tsx` |
+| F9.3 | FBT co-occurrence: deterministic builder over an abstract `BasketSource` (min-support/min-confidence/lift, symmetric pairs, idempotent rebuild, oversized-basket cap); synthetic test source ONLY — **no Shopify orders read, no scope added**; returns [] with no data; optional degrade to related | Implemented (algorithm) / **data source Requires Verification** | FULLY (algorithm) / RV (real data = `read_orders`±protected/`read_all_orders`) | `phase9-cooccurrence` | `app/lib/recommend/cooccurrence.ts` |
+| F9.4 | Recently-viewed (only personalization, client-side): first-party storage gated by try/catch AND the Phase 8.1 analytics-consent gate (fail-closed); server stores nothing; sent only as a bounded validated `recent` param (≤12 refs, strict format) to exclude seen items / list "recently viewed" | Implemented | FULLY (pure+static) / RV (live consent) | `phase9-extension` | `assets/boost-core.js` (recent helpers), `assets/boost-recommendations.js` |
+| F9.5 | API `proxy/recommendations` (type=similar/related/trending/fbt/recent; signature via handleProxy; per-shop rate limit; never-5xx) + Recommendations theme app block (product template, section target; settings; view/click beacon; textContent-only; toSameSitePath/isSafeImageUrl/formatPrice; en+fr parity; checkbox if/else) | Implemented | FULLY (logic/static) / RV (live theme) | `phase9-extension`, `phase7-routing`, locale parity | `app/routes/proxy.recommendations.tsx`, `blocks/boost-recommendations.liquid` |
+| F9.6 | Admin `/app/recommendations` (registered): enable/disable each type, OOS policy, diversification cap, trending half-life, FBT data-source note, preview tool with per-component score breakdown; settings persisted in `recommendation_settings` (RLS) | Implemented | FULLY | `phase9-rls` (settings), routing guard | `app/routes/app.recommendations.tsx`, `app/lib/recommend/settings.ts`, `engine.ts` |
+| F9.7 | Invariants: determinism; draft/deleted/unpublished/other-shop never recommended; seed excluded; OOS policy; hide respected; follows swap/rollback; unknown seed → []; beacon hostile-input no-op; RLS + cross-shop isolation on every new table; consent + extension static checks; no-data behaviour byte-identical to Phase 8 | Implemented | FULLY | `phase9-content`, `phase9-signals`, `phase9-cooccurrence`, `phase9-rls`, `phase9-engine`, `phase9-extension` | — |
+
+Live beacon/consent on a real store and real FBT order data are **Requires
+Verification**. Benchmarks remain **Phase 14**.
+
 ## Later phases (Planned — preserved, not implemented)
 
 | ID | Area | Status | Phase | Notes / class |
 |---|---|---|---|---|
 | F7 | Theme App Extension, mobile, URL state, a11y, Dawn + 2 themes, vintage investigation | **Implemented** | 7 | See the Phase 7 section above. Progressive enhancement; native search survives app outage. Live store/theme = Requires Verification. |
 | F8 | Merchandising (pin/boost/demote/hide/banners/schedule) + A/B testing | **Implemented** | 8 | See the Phase 8 section above. Inside the one planner; aggregate-only A/B; consent gating = Requires Verification. |
-| F9 | Recommendations (similar/related/FBT/trending/…); personalization | Planned | 9 | Own algorithms + PostgreSQL. `read_orders`/protected data = **Requires Verification**. |
+| F9 | Recommendations (similar/related/FBT/trending/recently-viewed) | **Implemented** | 9 | See the Phase 9 section above. Rule-based; PostgreSQL-only; no new scope. Real FBT order data (`read_orders`/protected/`read_all_orders`) + live beacon/consent = **Requires Verification**. |
 | F10 | Bundles | Planned | 10 | Certain bundle discounts require **Shopify Functions** — Requires Verification. |
 | F11 | Analytics (partitioned `analytics_event`, typed views, CSV), Web Pixel, attribution | Planned | 11 | No IP storage; Web Pixel sandbox/consent = Requires Verification. |
 | F12 | Back-in-stock, pre-order, countdown, email delivery | Planned | 12 | Email provider-agnostic; pre-order/checkout limits = Requires Verification. |

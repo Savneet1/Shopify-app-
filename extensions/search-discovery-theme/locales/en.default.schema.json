@@ -21,7 +21,17 @@
         "info": "The configured metafield facet key (default: material)."
       },
       "accent_bg": { "label": "Accent background" },
-      "focus_color": { "label": "Focus outline color" }
+      "focus_color": { "label": "Focus outline color" },
+      "recs_heading": { "label": "Heading" },
+      "recs_type": { "label": "Recommendation type" },
+      "recs_count": { "label": "Number of products" },
+      "recs_columns": { "label": "Columns" },
+      "recs_show_price": { "label": "Show price" },
+      "recs_show_vendor": { "label": "Show vendor" },
+      "recs_track_recent": {
+        "label": "Remember recently viewed (this browser)",
+        "info": "Stores recently viewed products in the shopper's own browser, only after analytics consent. Never sent to or stored on the server."
+      }
     }
   }
 }

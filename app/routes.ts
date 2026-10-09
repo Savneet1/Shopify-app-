@@ -25,6 +25,8 @@ export default [
     route("merch", "routes/app.merch.tsx"),
     route("banners", "routes/app.banners.tsx"),
     route("experiments", "routes/app.experiments.tsx"),
+    // Phase 9: recommendations settings + preview.
+    route("recommendations", "routes/app.recommendations.tsx"),
   ]),
 
   // App Proxy storefront endpoints (Phase 3). Shopify proxies
@@ -35,6 +37,9 @@ export default [
   route("proxy/suggest", "routes/proxy.suggest.tsx"),
   // Phase 8: A/B aggregate exposure/click beacon.
   route("proxy/merch-event", "routes/proxy.merch-event.tsx"),
+  // Phase 9: recommendations endpoint + aggregate product view/click beacon.
+  route("proxy/recommendations", "routes/proxy.recommendations.tsx"),
+  route("proxy/rec-event", "routes/proxy.rec-event.tsx"),
 
   // Webhooks.
   route("webhooks/app/uninstalled", "routes/webhooks.app.uninstalled.tsx"),

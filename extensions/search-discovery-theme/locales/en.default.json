@@ -28,6 +28,10 @@
       "unavailable": "Search is temporarily unavailable.",
       "use_native": "Use standard search",
       "noscript": "Enable JavaScript to use enhanced search, or use your browser's standard search."
+    },
+    "recs": {
+      "out_of_stock": "Out of stock",
+      "unavailable": "Recommendations are temporarily unavailable."
     }
   }
 }

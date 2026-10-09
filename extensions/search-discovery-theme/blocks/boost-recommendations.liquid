@@ -1,0 +1,142 @@
+{%- comment -%}
+  Phase 9 APP BLOCK — recommendations shelf (similar / related / trending /
+  frequently-bought-together / recently-viewed). target = section, intended for
+  the product template (needs the `product` object for a seed), but trending and
+  recently-viewed also work on non-product pages (no seed required).
+
+  Additive & resilient: renders ALONGSIDE theme content; on any JS failure,
+  timeout, or empty payload it silently renders nothing (no layout shift). All
+  links go through Core.toSameSitePath, images through Core.isSafeImageUrl,
+  prices through Core.formatPrice. textContent-only rendering (never innerHTML
+  with API data).
+{%- endcomment -%}
+
+{%- liquid
+  assign prefix = block.settings.proxy_prefix | default: 'apps'
+  assign subpath = block.settings.proxy_subpath | default: 'search'
+  assign seed_handle = ''
+  assign seed_gid = ''
+  if product
+    assign seed_handle = product.handle
+    assign seed_gid = product.id | prepend: 'gid://shopify/Product/'
+  endif
+-%}
+
+<div class="boost-recs" id="boost-recs-{{ block.id }}" data-boost-recs hidden>
+  <h2 class="boost-recs__heading">{{ block.settings.heading | escape }}</h2>
+  <div class="boost-recs__grid" data-boost-recs-grid></div>
+</div>
+
+<script type="application/json" id="boost-recs-config-{{ block.id }}">
+  {
+    "rootId": {{ 'boost-recs-' | append: block.id | json }},
+    "proxyBase": {{ '/' | append: prefix | append: '/' | append: subpath | json }},
+    "allowedHosts": [{{ shop.permanent_domain | json }}, {{ shop.domain | json }}],
+    "imageHosts": ["cdn.shopify.com", {{ shop.permanent_domain | json }}, {{ shop.domain | json }}],
+    "currency": {{ shop.currency | json }},
+    "type": {{ block.settings.rec_type | default: 'similar' | json }},
+    "count": {{ block.settings.count | default: 8 | json }},
+    "columns": {{ block.settings.columns | default: 4 | json }},
+    "showPrice": {% if block.settings.show_price == false %}false{% else %}true{% endif %},
+    "showVendor": {% if block.settings.show_vendor == false %}false{% else %}true{% endif %},
+    "trackRecent": {% if block.settings.track_recent == false %}false{% else %}true{% endif %},
+    "seed": {{ seed_handle | json }},
+    "seedGid": {{ seed_gid | json }},
+    "timeoutMs": {{ block.settings.timeout_ms | default: 2000 | json }},
+    "labels": {
+      "outOfStock": {{ 'boost.recs.out_of_stock' | t | json }},
+      "unavailable": {{ 'boost.recs.unavailable' | t | json }}
+    }
+  }
+</script>
+
+<link rel="stylesheet" href="{{ 'boost.css' | asset_url }}">
+<script src="{{ 'boost-core.js' | asset_url }}" defer></script>
+<script src="{{ 'boost-recommendations.js' | asset_url }}" defer></script>
+
+{% schema %}
+{
+  "name": "Recommendations",
+  "target": "section",
+  "settings": [
+    {
+      "type": "text",
+      "id": "heading",
+      "label": "t:boost.settings.recs_heading.label",
+      "default": "You may also like"
+    },
+    {
+      "type": "select",
+      "id": "rec_type",
+      "label": "t:boost.settings.recs_type.label",
+      "options": [
+        { "value": "similar", "label": "Similar products" },
+        { "value": "related", "label": "Related products" },
+        { "value": "trending", "label": "Trending" },
+        { "value": "fbt", "label": "Frequently bought together" },
+        { "value": "recent", "label": "Recently viewed" }
+      ],
+      "default": "similar"
+    },
+    {
+      "type": "range",
+      "id": "count",
+      "label": "t:boost.settings.recs_count.label",
+      "min": 2,
+      "max": 12,
+      "step": 1,
+      "default": 8
+    },
+    {
+      "type": "range",
+      "id": "columns",
+      "label": "t:boost.settings.recs_columns.label",
+      "min": 2,
+      "max": 6,
+      "step": 1,
+      "default": 4
+    },
+    {
+      "type": "checkbox",
+      "id": "show_price",
+      "label": "t:boost.settings.recs_show_price.label",
+      "default": true
+    },
+    {
+      "type": "checkbox",
+      "id": "show_vendor",
+      "label": "t:boost.settings.recs_show_vendor.label",
+      "default": false
+    },
+    {
+      "type": "checkbox",
+      "id": "track_recent",
+      "label": "t:boost.settings.recs_track_recent.label",
+      "info": "t:boost.settings.recs_track_recent.info",
+      "default": true
+    },
+    {
+      "type": "text",
+      "id": "proxy_prefix",
+      "label": "t:boost.settings.proxy_prefix.label",
+      "default": "apps"
+    },
+    {
+      "type": "text",
+      "id": "proxy_subpath",
+      "label": "t:boost.settings.proxy_subpath.label",
+      "default": "search"
+    },
+    {
+      "type": "range",
+      "id": "timeout_ms",
+      "label": "t:boost.settings.timeout_ms.label",
+      "min": 500,
+      "max": 5000,
+      "step": 250,
+      "unit": "ms",
+      "default": 2000
+    }
+  ]
+}
+{% endschema %}

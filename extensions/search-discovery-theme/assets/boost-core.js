@@ -391,6 +391,65 @@
     return { open: open, index: idx, action: "none" };
   }
 
+  // ---- Phase 9: recently-viewed product refs (pure; storage/consent is glue) ----
+  var MAX_RECENT = 12;
+  var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  var GID_RE = /^gid:\/\/shopify\/Product\/[0-9]{1,20}$/;
+  var HANDLE_RE = /^[a-z0-9](?:[a-z0-9_-]{0,98}[a-z0-9])?$/;
+
+  /**
+   * normalizeRef(raw): a valid product ref (uuid / Product gid / handle) or
+   * null. Handles are lower-cased. Mirrors the server (app/lib/recommend/refs.ts)
+   * so the storefront never stores or sends a ref the API would reject.
+   */
+  function normalizeRef(raw) {
+    if (raw == null) return null;
+    var s = String(raw).trim();
+    if (s.length === 0 || s.length > 255) return null;
+    if (UUID_RE.test(s)) return s;
+    if (GID_RE.test(s)) return s;
+    var lower = s.toLowerCase();
+    return HANDLE_RE.test(lower) ? lower : null;
+  }
+
+  /**
+   * parseRecentIds(raw, max): validate + dedupe + cap a comma string or array of
+   * refs (first occurrence wins, order preserved). Never throws.
+   */
+  function parseRecentIds(raw, max) {
+    var cap = max == null ? MAX_RECENT : max;
+    var parts = Array.isArray(raw) ? raw : (raw == null ? [] : String(raw).split(","));
+    var out = [];
+    var seen = {};
+    for (var i = 0; i < parts.length && out.length < cap; i++) {
+      var ref = normalizeRef(parts[i]);
+      if (ref && !seen[ref]) { seen[ref] = true; out.push(ref); }
+    }
+    return out;
+  }
+
+  /**
+   * pushRecentId(list, id, max): return a new most-recent-first list with `id`
+   * moved/added to the front, deduped and capped. An invalid id leaves the list
+   * unchanged (validated + bounded first).
+   */
+  function pushRecentId(list, id, max) {
+    var cap = max == null ? MAX_RECENT : max;
+    var ref = normalizeRef(id);
+    var existing = parseRecentIds(list, cap);
+    if (!ref) return existing;
+    var out = [ref];
+    for (var i = 0; i < existing.length && out.length < cap; i++) {
+      if (existing[i] !== ref) out.push(existing[i]);
+    }
+    return out;
+  }
+
+  /** Serialize a recent-ids list to the bounded `recent` query param value. */
+  function serializeRecentIds(list, max) {
+    return parseRecentIds(list, max).join(",");
+  }
+
   /** Simple per-reader-independent debounce helper (used by the glue; pure). */
   function makeDebouncer(setTimeoutFn, clearTimeoutFn) {
     var st = setTimeoutFn || (typeof setTimeout !== "undefined" ? setTimeout : null);
@@ -421,5 +480,10 @@
     decideFallback: decideFallback,
     comboboxKey: comboboxKey,
     makeDebouncer: makeDebouncer,
+    MAX_RECENT: MAX_RECENT,
+    normalizeRef: normalizeRef,
+    parseRecentIds: parseRecentIds,
+    pushRecentId: pushRecentId,
+    serializeRecentIds: serializeRecentIds,
   };
 });
