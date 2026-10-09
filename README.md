@@ -2,7 +2,7 @@
 
 A production-grade, multi-tenant Shopify **Search, Filter & Discovery** app built
 on the current official **Shopify React Router** template, with PostgreSQL as the
-only data/search engine. This repository is at **Phase 9 (Recommendations)**.
+only data/search engine. This repository is at **Phase 9.1 (Recommendations; fix batch)**.
 
 > Phase gating is enforced. Implemented so far: Phase 1 (foundation: auth,
 > embedded shell, multi-tenancy + RLS, privacy webhooks, billing), Phase 2/2.1
@@ -23,7 +23,10 @@ only data/search engine. This repository is at **Phase 9 (Recommendations)**.
 > similar/related, trending from an aggregate first-party signal beacon,
 > frequently-bought-together algorithm over an abstract basket source —
 > **no orders scope, synthetic source only**, recently-viewed client-side with
-> consent gating, proxy API + theme block + admin). Analytics/bundles/etc.
+> consent gating, proxy API + theme block + admin), Phase 9.1 (fix batch:
+> trending signal window so stale signals can't outrank fresh content,
+> bounded signal retention on the maintenance tick, case-insensitive tag
+> overlap, per-schema-default Liquid checkbox rendering). Analytics/bundles/etc.
 > are later phases. See `docs/PHASE*.md`. Stack unchanged:
 > no Redis, no external search/AI, PostgreSQL-only; scopes = `read_products`
 > (Phase 9 adds no scope; real FBT order data = Requires Verification).

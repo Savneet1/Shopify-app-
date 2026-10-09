@@ -191,6 +191,22 @@ describe("Phase 9.1 — content recommendations engine", () => {
     expect(out[0].title).toBe("Qux1");
   });
 
+  it("K3: tag overlap is case-insensitive (Sport == sport) and matches same-case", async () => {
+    // Fresh products with a vendor/type not shared by CAT, so only these match.
+    await seed(db, shop, { gid: G(20), title: "Kseed", vendor: "ZV", type: "ZT", tags: ["Sport", "Red"], price: "100" });
+    await seed(db, shop, { gid: G(21), title: "Kmixed", vendor: "ZV", type: "ZT", tags: ["sport"], price: "100" }); // lower-case
+    await seed(db, shop, { gid: G(22), title: "Ksame", vendor: "ZV", type: "ZT", tags: ["Sport"], price: "100" });  // same-case
+    versionId = await build(db, shop);
+    const out = await rec(G(20), { explain: true });
+    const mixed = out.find((p) => p.gid === G(21));
+    const same = out.find((p) => p.gid === G(22));
+    expect(mixed).toBeTruthy();
+    expect(same).toBeTruthy();
+    // "sport" matches seed "Sport": tag component is positive and identical.
+    expect(mixed!.breakdown!.tags).toBeGreaterThan(0);
+    expect(mixed!.breakdown!.tags).toBe(same!.breakdown!.tags);
+  });
+
   it("follows an index swap and a rollback automatically", async () => {
     const v1 = versionId;
     // rebuild a new active version with an extra candidate

@@ -29,18 +29,28 @@ describe("Phase 8.1b — checkbox toggles are switch-off-able (J1)", () => {
     const src = readFileSync(join(BLOCKS, f), "utf8");
     const schema = schemaOf(src);
     const body = bodyOf(src);
-    const checkboxIds: string[] = (schema.settings || [])
+    const checkboxes: { id: string; default: boolean }[] = (schema.settings || [])
       .filter((s: any) => s && s.type === "checkbox" && typeof s.id === "string")
-      .map((s: any) => s.id);
+      // Shopify treats a checkbox with no `default` as unchecked (false).
+      .map((s: any) => ({ id: s.id, default: s.default === true }));
 
-    it(`${f}: every checkbox renders via explicit if/else, never a bare | default:`, () => {
-      for (const id of checkboxIds) {
+    it(`${f}: every checkbox renders via the if/else form matching its schema default`, () => {
+      for (const { id, default: dflt } of checkboxes) {
         // (1) No `block.settings.<id> | default: true|false` without allow_false.
         const badDefault = new RegExp(`block\\.settings\\.${id}\\s*\\|\\s*default:\\s*(?:true|false)(?![^}]*allow_false:\\s*true)`);
         expect(badDefault.test(body), `${f}: '${id}' uses an unsafe | default: filter`).toBe(false);
-        // (2) The explicit, filter-independent form is used.
-        const explicit = new RegExp(`\\{%\\s*if\\s+block\\.settings\\.${id}\\s*==\\s*false\\s*%\\}`);
-        expect(explicit.test(body), `${f}: '${id}' is not rendered via the explicit if/else`).toBe(true);
+        // (2) K4: the explicit form must make the UNSET value equal the schema
+        // default. default:true → `== false` (unset → true); default:false →
+        // `== true` (unset → false).
+        const falseForm = new RegExp(`\\{%\\s*if\\s+block\\.settings\\.${id}\\s*==\\s*false\\s*%\\}`);
+        const trueForm = new RegExp(`\\{%\\s*if\\s+block\\.settings\\.${id}\\s*==\\s*true\\s*%\\}`);
+        if (dflt) {
+          expect(falseForm.test(body), `${f}: default-true '${id}' must use the '== false' form`).toBe(true);
+          expect(trueForm.test(body), `${f}: default-true '${id}' must NOT use the '== true' form`).toBe(false);
+        } else {
+          expect(trueForm.test(body), `${f}: default-false '${id}' must use the '== true' form`).toBe(true);
+          expect(falseForm.test(body), `${f}: default-false '${id}' must NOT use the '== false' form`).toBe(false);
+        }
       }
     });
   }

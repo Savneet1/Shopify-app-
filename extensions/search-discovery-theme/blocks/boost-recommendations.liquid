@@ -38,7 +38,7 @@
     "count": {{ block.settings.count | default: 8 | json }},
     "columns": {{ block.settings.columns | default: 4 | json }},
     "showPrice": {% if block.settings.show_price == false %}false{% else %}true{% endif %},
-    "showVendor": {% if block.settings.show_vendor == false %}false{% else %}true{% endif %},
+    "showVendor": {% if block.settings.show_vendor == true %}true{% else %}false{% endif %},
     "trackRecent": {% if block.settings.track_recent == false %}false{% else %}true{% endif %},
     "seed": {{ seed_handle | json }},
     "seedGid": {{ seed_gid | json }},

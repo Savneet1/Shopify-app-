@@ -323,7 +323,13 @@ export async function recommendContent(
             CASE WHEN c.vendor IS NOT NULL AND c.vendor = s.seed_vendor THEN ${pWVendor}::numeric ELSE 0 END
           ), 0) AS s_vendor,
           COALESCE(SUM(
-            LEAST(cardinality(ARRAY(SELECT unnest(c.tags) INTERSECT SELECT unnest(s.seed_tags))), ${pTagCap}::int) * ${pWTag}::numeric
+            -- K3: tag overlap is case-insensitive — lower() + DISTINCT both
+            -- sides so "Sport" matches "sport". Weight + cap unchanged.
+            LEAST(cardinality(ARRAY(
+              SELECT DISTINCT lower(ct) FROM unnest(c.tags) ct
+              INTERSECT
+              SELECT DISTINCT lower(st) FROM unnest(s.seed_tags) st
+            )), ${pTagCap}::int) * ${pWTag}::numeric
           ), 0) AS s_tag,
           COALESCE(SUM(
             ${pWPrice}::numeric * GREATEST(0, 1 - LEAST(

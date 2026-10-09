@@ -111,6 +111,41 @@ describe("Phase 9.2 — trending signals", () => {
     expect(out.every((p) => p.score === 0)).toBe(true);
   });
 
+  // ---- K1: signal window (stale signals must not outrank fresh content) ----
+  it("a stale-only signal does not rank its product above newer content", async () => {
+    // Alpha (oldest product) gets one very old click; half-life 7 → window 56d.
+    await rec(G(1), "click", new Date("2024-01-01T00:00:00Z"));
+    const out = await trend({ limit: 3 });
+    // Alpha is excluded from the scored set → shelf is the newest-visible order,
+    // so the decayed-to-nothing Alpha is NOT lifted above newer products.
+    expect(out.map((p) => p.gid)).toEqual([G(3), G(2), G(1)]);
+    expect(out.every((p) => p.score === 0)).toBe(true);
+  });
+
+  it("window edge: a row at the cutoff is counted, one day older is not", async () => {
+    // halfLife 7 → window 56 → cutoff day = NOW(UTC) − 56.
+    await rec(G(2), "click", daysBefore(56)); // Bravo: exactly at the edge → counted
+    await rec(G(1), "click", daysBefore(57)); // Alpha: one day too old → excluded
+    const out = await trend({ limit: 3 });
+    expect(out[0].gid).toBe(G(2));             // Bravo scored (in-window)
+    expect(out[0].score).toBeGreaterThan(0);
+    // Alpha is not scored; it only appears via the newest top-up (score 0).
+    const alpha = out.find((p) => p.gid === G(1))!;
+    expect(alpha.score).toBe(0);
+  });
+
+  it("half-life scales the window per WINDOW_DAYS = min(90, 8×halfLife)", async () => {
+    // A signal 10 days before NOW.
+    await rec(G(2), "click", daysBefore(10));
+    // halfLife 1 → window 8 → the 10-day-old row is OUT of window → not scored.
+    const short = await trend({ limit: 3, halfLifeDays: 1 });
+    expect(short.find((p) => p.gid === G(2))!.score).toBe(0);
+    // halfLife 7 → window 56 → the same row is IN window → scored.
+    const long = await trend({ limit: 3, halfLifeDays: 7 });
+    expect(long[0].gid).toBe(G(2));
+    expect(long[0].score).toBeGreaterThan(0);
+  });
+
   it("excludes out-of-stock by default and respects hide", async () => {
     await seed(db, shop, G(4), "Delta", "2025-01-01T00:00:00Z", false); // OOS, newest
     version = await build(db, shop);

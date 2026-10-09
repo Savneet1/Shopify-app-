@@ -72,6 +72,29 @@ no signals at all the whole shelf is that newest-visible fallback.
 **The beacon is public and inflatable, so trending counts are advisory** — a
 heuristic shelf, never an authoritative or billable metric.
 
+**Signal window (9.1 fix K1).** Only rows with `day ≥ nowUTC − WINDOW_DAYS` are
+scored, where **`WINDOW_DAYS = min(90, 8 × halfLifeDays)`** (default half-life 7
+→ 56-day window). Past ~8 half-lives a row has decayed below ~0.4% of its weight;
+counting it only let a long-dead signal (score ≈ 0 but > 0) outrank genuinely
+newer content and prevented the newest-first top-up from ever applying. A product
+with no in-window signal now drops out of the scored set and is served by the
+newest-visible top-up instead. The decay math for in-window rows is unchanged.
+
+**Retention (9.1 fix K2).** `product_signal_daily` rows older than
+**`RETENTION_DAYS = 120`** (always ≥ the largest possible window, 90) are purged
+by the existing periodic maintenance/reconciliation tick: `runSignalRetention`
+enumerates installed shops (reusing the `app_shops_needing_full_sync('0 seconds')`
+SECURITY DEFINER enumerator) and, per shop under `withShop` (RLS), deletes one
+bounded batch (`PURGE_BATCH_SIZE = 10000`) via `purgeOldSignals` — short locks,
+idempotent, draining a backlog over successive ticks. No new queue was added.
+
+**Consent posture (Requires Verification).** The view/click beacon writes only an
+aggregate per-product counter with **no visitor identifier, no IP, no per-user
+row, no storage of the request and no logging**, so it is treated as first-party
+aggregate analytics and is **not** gated on customer-privacy consent. This
+position is **Requires Verification** (legal/privacy review on a real store).
+Recently-viewed (9.4) is different — it is per-shopper and **is** consent-gated.
+
 ## 9.3 Frequently bought together (`cooccurrence.ts`)
 
 > **Scope note — data source Requires Verification.** Real FBT needs Shopify
@@ -157,9 +180,34 @@ every new table; recently-viewed consent gate + storage are fail-closed; the
 extension renders with textContent only. With no recommendation data/settings,
 existing search/merch behaviour is byte-identical (recommendations are additive).
 
+## Cost / performance (not measured — Phase 14)
+
+Each content/trending request scans the active version's visible docs: content
+cross-joins candidate docs against the resolved seed row(s) and computes pg_trgm
+`similarity()` per candidate; trending aggregates the in-window signal rows. These
+costs are **not measured** and no numbers are claimed — benchmarks and any
+indexing/materialisation work are Phase 14. The content tag/collection/trigram
+work is bounded by the active version's visible-doc count per request.
+
+## Constants (9.1)
+
+`VIEW_WEIGHT=1`, `CLICK_WEIGHT=3`, `DEFAULT_HALF_LIFE_DAYS=7`,
+`WINDOW_DAYS=min(90, 8×halfLifeDays)`, `RETENTION_DAYS=120`,
+`PURGE_BATCH_SIZE=10000`. Content weights/caps per the 9.1 table above. Tag
+overlap is compared case-insensitively (`lower()` + distinct on both sides);
+collection overlap keeps its existing title comparison.
+
+> Latent note (not changed): `recommendContent` supports multiple seeds, but the
+> orchestrator passes a single seed, so the trigram qualification threshold
+> (which sums per-seed similarities) is exercised with one seed only. If a future
+> change wires multi-seed, switch that gate to per-seed MAX similarity so the
+> threshold does not scale with seed count. Left as-is here to avoid changing
+> existing single-seed results.
+
 ## Requires Verification
 
 Real FBT order data (`read_orders` / protected customer data / `read_all_orders`
-— not approved); live App Proxy beacon + customer-privacy consent on a real
-store; live theme rendering of the block. Performance/benchmarks are Phase 14 and
-are **not** claimed here.
+— not approved); the **beacon's not-consent-gated posture** (legal/privacy
+review); live App Proxy beacon + customer-privacy consent on a real store; live
+theme rendering of the block. Performance/benchmarks are Phase 14 and are **not**
+claimed here.

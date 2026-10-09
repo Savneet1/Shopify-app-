@@ -63,9 +63,15 @@ describe("Phase 9 — recommendations block + glue (static)", () => {
     expect(/default:\s*'search'/.test(block)).toBe(true);
   });
 
-  it("checkbox settings render via the explicit if/else form (never | default:)", () => {
-    for (const id of ["show_price", "show_vendor", "track_recent"]) {
-      expect(new RegExp(`\\{%\\s*if\\s+block\\.settings\\.${id}\\s*==\\s*false\\s*%\\}`).test(block), id).toBe(true);
+  it("checkbox settings render via the if/else form matching each schema default (K4)", () => {
+    // default-true → `== false` (unset→true); default-false → `== true` (unset→false)
+    const expectations: Record<string, "false" | "true"> = {
+      show_price: "false",   // default true
+      track_recent: "false", // default true
+      show_vendor: "true",   // default false — unset must render false
+    };
+    for (const [id, form] of Object.entries(expectations)) {
+      expect(new RegExp(`\\{%\\s*if\\s+block\\.settings\\.${id}\\s*==\\s*${form}\\s*%\\}`).test(block), id).toBe(true);
       expect(new RegExp(`block\\.settings\\.${id}\\s*\\|\\s*default:`).test(block), id).toBe(false);
     }
   });

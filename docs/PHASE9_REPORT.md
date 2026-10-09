@@ -111,3 +111,72 @@ Not measured. No performance numbers are claimed — benchmarks are Phase 14.
 
 Awaiting independent verification + live-Prisma CI confirmation for the Phase 9
 line. Phase 10 (Bundles) is **not** started.
+
+---
+
+# Phase 9.1 — fix batch (built on `5599e84`)
+
+Five fixes from independent verification. No new scope/dependency/extension, no
+new migration, no new queue. Full suite **349 passed | 9 skipped** (was 340 | 9);
+typecheck/build/worker:build clean; locale parity + routing guard + liquid-boolean
+sweep green.
+
+## K1 — trending: stale signals must not outrank fresh content
+
+**Failing input →** with a 7-day half-life and `now = 2026-10-09`, a product
+whose only signal row was `2024-01-01` scored ≈ 0.0000 yet ranked **above** a
+brand-new product with no signals, because the `HAVING … > 0` admitted the
+decayed-to-nothing row and the newest-first top-up never applied.
+**New behaviour →** a documented signal window — only rows with
+`day ≥ nowUTC − WINDOW_DAYS`, `WINDOW_DAYS = min(90, 8 × halfLifeDays)`, count
+(`signals.ts`, stated in `docs/PHASE9.md`). A product with no in-window signal
+drops out of the scored set and is served by the newest-visible top-up. Decay math
+for in-window rows is unchanged (existing exact-value tests still pass).
+Tests (`phase9-signals`): stale-only product not scored (shelf is newest order);
+cutoff edge included / one day older excluded (injected clock); half-life scales
+the window.
+
+## K2 — retention for `product_signal_daily` (was unbounded)
+
+`purgeOldSignals` (`signals.ts`) deletes rows older than `RETENTION_DAYS = 120`
+(≥ the largest window) per shop under `withShop` (RLS), one bounded batch
+(`PURGE_BATCH_SIZE = 10000`) per call → short locks, idempotent. Wired into the
+existing maintenance-reconcile tick via `runSignalRetention` (`maintenance.ts`,
+called from `worker.ts`), which enumerates installed shops by reusing
+`app_shops_needing_full_sync('0 seconds')` and purges each through `withShopExec`.
+No new queue. Tests (`phase9-retention`): old deleted / new kept / other shop
+untouched; second run no-op; batched draining over multiple runs (injected clock);
+enumerator covers all installed shops; tick path purges one batch per shop.
+
+## K3 — case-insensitive tag overlap
+
+**Failing input →** seed tags `["Sport","red"]` vs candidate `["sport"]` scored 0
+for tags. **New behaviour →** the tag-overlap set intersection now lowercases and
+de-duplicates both sides (`content.ts`); weights, caps and the collection
+comparison are unchanged. Test (`phase9-content`): mixed-case overlap scores the
+same as same-case and is positive; all prior content tests pass unchanged. The
+latent multi-seed trigram-gate note is documented, not changed.
+
+## K4 — Liquid checkbox defaults match schema
+
+**Failing input →** in `boost-recommendations.liquid`, `show_vendor`
+(schema default **false**) used the `== false` form, so an **unset** setting
+rendered `true`. **New behaviour →** default-false checkboxes use
+`{% if block.settings.x == true %}true{% else %}false{% endif %}`; default-true
+keep the `== false` form, so an unset value always equals its schema default. The
+static liquid test (`phase8b-liquid-booleans`) now enforces the correct form
+**per schema default across all blocks** (existing default-true blocks unchanged).
+
+## K5 — docs
+
+`docs/PHASE9.md`: documents the signal window + retention constants, states the
+beacon is aggregate/no-identifier/no-storage/no-logging and therefore
+not-consent-gated — **marked Requires Verification** (legal/privacy) — while
+recently-viewed **is** consent-gated, and notes the per-request visible-doc scan
+cost is unmeasured (Phase 14). This report's 9.1 section records each failing
+input → new behaviour.
+
+## STATUS (9.1)
+
+PHASE 9.1 IMPLEMENTED & PG-VERIFIED (349 passed | 9 skipped). LIVE-PRISMA
+CONFIRMATION PENDING. PHASE 10 NOT STARTED.

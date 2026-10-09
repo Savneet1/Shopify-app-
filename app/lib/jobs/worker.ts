@@ -13,7 +13,7 @@ import {
   fetchCollectionNode,
 } from "~/lib/shopify/bulk.server";
 import { enqueueFullSync } from "./queue";
-import { runReconciliationTick } from "./maintenance";
+import { runReconciliationTick, runSignalRetention } from "./maintenance";
 import { prismaRootExec } from "~/lib/db/root-exec.server";
 import { logger } from "~/lib/logger.server";
 
@@ -66,7 +66,10 @@ export async function startWorker(): Promise<PgBoss> {
       (shopId) => enqueueFullSync(shopId),
       process.env.RECONCILE_INTERVAL || "24 hours",
     );
-    logger.info({ enqueued: n }, "reconciliation tick");
+    // K2: same tick drains one bounded batch of expired trending signals per
+    // installed shop (RLS-scoped, short locks). No new queue.
+    const purged = await runSignalRetention(prismaRootExec(), withShopExec);
+    logger.info({ enqueued: n, signalsPurged: purged }, "reconciliation tick");
   });
   await boss.schedule(
     QUEUE.maintenanceReconcile,

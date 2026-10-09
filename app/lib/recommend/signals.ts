@@ -32,6 +32,29 @@ export const VIEW_WEIGHT = 1;
 export const CLICK_WEIGHT = 3;
 export const DEFAULT_HALF_LIFE_DAYS = 7;
 
+/**
+ * Signal window (K1): only product_signal_daily rows with
+ * `day >= nowUTC - WINDOW_DAYS` are scored, where
+ *   WINDOW_DAYS = min(90, 8 × halfLifeDays).
+ * Beyond ~8 half-lives a row has decayed to <0.4% of its weight, so counting it
+ * only lets a long-dead signal (score ≈ 0 but > 0) outrank genuinely newer
+ * content. Products with no in-window signal therefore drop out of the scored
+ * set and are served by the newest-visible top-up instead. The decay math for
+ * in-window rows is unchanged.
+ */
+export function signalWindowDays(halfLifeDays: number): number {
+  const hl = clampHalfLife(halfLifeDays);
+  return Math.min(90, 8 * hl);
+}
+
+/**
+ * Retention (K2): product_signal_daily rows older than RETENTION_DAYS are
+ * purged by the periodic maintenance tick. Always ≥ the largest possible window
+ * (90), so retention never deletes a row the scorer would still count.
+ */
+export const RETENTION_DAYS = 120;
+export const PURGE_BATCH_SIZE = 10000;
+
 export type SignalType = "view" | "click";
 
 function visibleWhere(pb: Params, shopId: string, versionId: string, alias = ""): string {
@@ -162,10 +185,15 @@ async function trendingScored(
   const vis = visibleWhere(pb, shopId, versionId, "d");
   const pNow = pb.add(now.toISOString());
   const pHalf = pb.add(halfLife);
+  const pWindow = pb.add(signalWindowDays(halfLife));
   const pView = pb.add(VIEW_WEIGHT);
   const pClick = pb.add(CLICK_WEIGHT);
   const extra = candidateFilters(pb, opts, "d");
   const pLimit = pb.add(Math.max(1, Math.floor(opts.limit)));
+  // K1: only in-window signal rows join (day >= nowUTC - WINDOW_DAYS). A product
+  // whose only signals are older than the window contributes no rows → excluded
+  // from the scored set → served by the newest-visible top-up instead.
+  const windowPred = `s.day >= ((((${pNow}::timestamptz) AT TIME ZONE 'UTC')::date) - ${pWindow}::int)`;
   const sql = `
     SELECT d.product_id, d.shopify_product_gid AS gid, d.doc,
       SUM(
@@ -174,6 +202,7 @@ async function trendingScored(
       ) AS score
     FROM product_search_doc d
     JOIN product_signal_daily s ON s.shop_id = d.shop_id AND s.product_id = d.product_id
+      AND ${windowPred}
     WHERE ${vis}${extra.length ? " AND " + extra.join(" AND ") : ""}
     GROUP BY d.product_id, d.shopify_product_gid, d.doc, d.title
     HAVING SUM(
@@ -222,4 +251,46 @@ export async function trending(
     exec, shopId, versionId, { ...opts, limit: limit - scored.length }, [...have],
   );
   return scored.concat(topUp).slice(0, limit);
+}
+
+export interface PurgeOptions {
+  retentionDays?: number;
+  batchSize?: number;
+  now?: Date;
+}
+
+/**
+ * K2 — delete product_signal_daily rows older than `retentionDays` for ONE shop,
+ * under the caller's tenant transaction (RLS). Bounded to at most `batchSize`
+ * rows per call so it never holds a long lock; call it repeatedly (e.g. once per
+ * maintenance tick) to drain a large backlog. Idempotent: once nothing is older
+ * than the cutoff it deletes 0. Returns the number of rows deleted.
+ */
+export async function purgeOldSignals(
+  exec: Exec,
+  shopId: string,
+  opts: PurgeOptions = {},
+): Promise<number> {
+  const retentionDays = Math.max(1, Math.floor(opts.retentionDays ?? RETENTION_DAYS));
+  const batchSize = Math.max(1, Math.floor(opts.batchSize ?? PURGE_BATCH_SIZE));
+  const now = opts.now ?? new Date();
+  const pb = new Params();
+  const pShop = pb.add(shopId);
+  const pNow = pb.add(now.toISOString());
+  const pRet = pb.add(retentionDays);
+  const pBatch = pb.add(batchSize);
+  // Composite-key IN with an ordered LIMIT subquery → a bounded, index-friendly
+  // batch delete. RLS already scopes to this shop; the explicit shop_id keeps
+  // the predicate sargable.
+  return exec.run(
+    `DELETE FROM product_signal_daily
+     WHERE (shop_id, product_id, day) IN (
+       SELECT shop_id, product_id, day FROM product_signal_daily
+       WHERE shop_id = ${pShop}::uuid
+         AND day < ((((${pNow}::timestamptz) AT TIME ZONE 'UTC')::date) - ${pRet}::int)
+       ORDER BY day ASC
+       LIMIT ${pBatch}::int
+     )`,
+    pb.values,
+  );
 }
