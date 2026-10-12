@@ -22,7 +22,7 @@ describe("Phase 10 boost-core — cart helpers (pure)", () => {
     expect(Core.cartAddUrl("//evil.com/")).toBe("/cart/add.js"); // protocol-relative → reset
     expect(Core.cartAddUrl("https://evil.com/")).toBe("/cart/add.js"); // not root-relative → reset
   });
-  it("isNumericId accepts bare positive integer ids only", () => {
+  it("isNumericId accepts bare positive SAFE-integer ids only (M4a)", () => {
     expect(Core.isNumericId("123")).toBe(true);
     expect(Core.isNumericId(123)).toBe(true);
     expect(Core.isNumericId("gid://shopify/ProductVariant/1")).toBe(false);
@@ -30,6 +30,12 @@ describe("Phase 10 boost-core — cart helpers (pure)", () => {
     expect(Core.isNumericId("-5")).toBe(false);
     expect(Core.isNumericId("")).toBe(false);
     expect(Core.isNumericId(0)).toBe(false);
+    // M4a: a 15-digit id is a safe integer → accepted; a 19-digit id is NOT
+    // (Number() would round it to a different variant) → rejected.
+    expect(Core.isNumericId("123456789012345")).toBe(true);        // 15 digits, safe
+    expect(Core.isNumericId("1234567890123456789")).toBe(false);   // 19 digits, unsafe
+    expect(Core.isNumericId(String(Number.MAX_SAFE_INTEGER))).toBe(true);
+    expect(Core.isNumericId(String(Number.MAX_SAFE_INTEGER + 2))).toBe(false);
   });
 });
 
@@ -63,6 +69,10 @@ describe("Phase 10 — Bundle block + glue (static)", () => {
     expect(glue.includes("Core.isSafeImageUrl(")).toBe(true);
     expect(glue.includes("Core.formatPrice(")).toBe(true);
     expect(glue.includes("Core.cartAddUrl(")).toBe(true);
+  });
+
+  it("M1c: the product lookup prefers the GID and falls back to the handle", () => {
+    expect(/cfg\.seedGid\s*\|\|\s*cfg\.seed/.test(glue)).toBe(true);
   });
 
   it("cart add uses only validated numeric variant ids + bundle line properties", () => {

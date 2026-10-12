@@ -145,9 +145,48 @@ locale parity, valid schema JSON, schema-default checkbox form, numeric-only car
 variant ids); routing-guard coverage of every new route. With no bundles
 configured, all existing search/merch/recommendation behaviour is byte-identical.
 
+## Known limitations (added in 10.1)
+- **Cart UI refresh.** After a successful add the block only announces success
+  via its `aria-live` status; the theme's cart drawer / cart-count bubble may not
+  refresh automatically (that is theme-specific — some themes listen for a cart
+  event, others require a `sections` re-render on the add call). **Requires
+  Verification** per theme.
+- **Draft-bundle beacon counts.** The beacon accepts view/add-to-cart counts for
+  any bundle that exists in the shop, including `draft`/`archived` ones (it only
+  checks shop ownership + uuid). The counts are advisory/inflatable anyway, so
+  this is harmless, but a draft bundle can accumulate counts from its own shop.
+
+## Lookup, duplicates, cost, hygiene (10.1 fix batch)
+- **M1 — lookup by resolved identity.** The storefront sends the product GID when
+  available and the handle otherwise; the API resolves the incoming ref (gid or
+  handle, handle case-insensitive) to a visible doc's identity, then matches
+  bundle slots by **gid OR lowercased handle** in SQL — so a gid-slot bundle
+  shows on a handle page and vice versa. A ref that does not resolve returns `[]`
+  (never "all bundles").
+- **M2 — duplicate by resolved identity.** The admin save path resolves each slot
+  ref (active-version docs, or the catalog `product` table when no version is
+  active) and rejects two slots that resolve to the same product even when
+  entered as a gid and a handle; unresolvable refs stay allowed (drafts).
+  Resolve time independently blocks a bundle whose two slots resolve to one
+  product, so duplicate lines never reach a shopper.
+- **M3 — bounded, batched cost.** `listVisibleBundles` pre-filters matching bundle
+  ids in SQL (hard-capped at `MAX_RESOLVED_BUNDLES` = 50, deterministic order)
+  and then loads everything in a constant number of queries regardless of how
+  many bundles exist: **a no-match product lookup costs 3 queries** (active
+  version, resolve ref, candidate ids) and **a matching lookup costs 7** (+
+  bundles, slots, one visible-docs query, one variants query) — down from 82 and
+  242 respectively for a 40-bundle shop.
+- **M4 — cart/total hygiene.** `Core.isNumericId` rejects any variant id that is
+  not a positive safe integer (a 19-digit id is rejected so `Number()` can never
+  round it to a different variant). Bundle totals / line totals / ranges are
+  computed in integer minor units (BigInt) scaled by the largest number of
+  decimal places present (minimum 2) and formatted back to a decimal string — no
+  binary floating point, 3-decimal prices never truncated.
+
 ## Requires Verification
 Real bundle discounts (`write_discounts` + a deployed Shopify Function); the Ajax
 Cart API's behaviour on a partially-failing `items[]` (atomic vs partial);
-Markets/locale-prefixed cart root beyond `window.Shopify.routes.root`; live theme
-rendering and live customer-facing cart adds; the beacon's advisory counts.
-Performance/benchmarks are Phase 14 and are not claimed here.
+Markets/locale-prefixed cart root beyond `window.Shopify.routes.root`; the
+theme's cart drawer/count refresh after an add; live theme rendering and live
+customer-facing cart adds; the beacon's advisory counts. Performance/benchmarks
+are Phase 14 and are not claimed here.

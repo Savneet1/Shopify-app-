@@ -465,9 +465,17 @@
     return r + "cart/add.js";
   }
 
-  /** isNumericId(v): a bare positive integer id string (for cart variant ids). */
+  /**
+   * isNumericId(v): a bare positive integer id SAFE to pass to the cart as a
+   * JS number. Rejects anything that is not a positive safe integer — e.g. a
+   * 19-digit id that Number() would round to a different variant (M4a).
+   */
   function isNumericId(v) {
-    return typeof v === "string" ? /^[0-9]{1,19}$/.test(v) : (typeof v === "number" && isFinite(v) && v > 0 && Math.floor(v) === v);
+    if (typeof v === "number") return isFinite(v) && v > 0 && Number.isSafeInteger(v);
+    if (typeof v !== "string") return false;
+    if (!/^[0-9]{1,19}$/.test(v)) return false;
+    var n = Number(v);
+    return Number.isSafeInteger(n) && n > 0;
   }
 
   /** Simple per-reader-independent debounce helper (used by the glue; pure). */

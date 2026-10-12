@@ -102,3 +102,66 @@ line. Phase 11 (Analytics) is **not** started.
 ## STATUS
 PHASE 10 IMPLEMENTED & PG-VERIFIED (395 passed | 11 skipped). LIVE-PRISMA
 CONFIRMATION PENDING. PHASE 11 NOT STARTED.
+
+---
+
+# Phase 10.1 — fix batch (built on `4826080`)
+
+Five fixes from independent verification. No new scope/dependency/extension, no
+new migration. Full suite **416 passed | 11 skipped** (was 395 | 11); every prior
+test still passes; typecheck/build/worker:build clean; routing guard + locale
+parity + liquid-boolean sweep green.
+
+## M1 — product-page lookup by resolved identity (was string match)
+**Failing input →** `listVisibleBundles` filtered with
+`slot.product_ref_value === productRef`, so a bundle saved with GID slots never
+showed when the theme block looked up by handle (`?product=red-shoe`), and a
+handle-slot bundle never matched a GID lookup.
+**New behaviour →** the incoming ref is resolved (gid or handle, handle
+case-insensitive) to a visible doc's identity, and bundle slots are matched by
+**gid OR lowercased handle** in SQL (`engine.ts` `resolveProductRef` +
+`listVisibleBundles`). The block now sends `cfg.seedGid` with a handle fallback
+(`boost-bundle.js`). A ref that doesn't resolve returns `[]`.
+Tests (`phase10-lookup`, realistic handles): gid-slot found by handle & gid;
+handle-slot found by gid & handle; mixed-kind; case differences; unknown/draft/
+other-shop → []; non-containing bundle excluded; unavailable bundle still hidden.
+
+## M2 — duplicate detection by resolved identity
+**Failing input →** `normalizeBundleInput` deduped on `kind:value`, so the same
+product entered once by gid and once by handle was accepted.
+**New behaviour →** `assertNoDuplicateResolvedProducts` (model.ts) resolves each
+slot ref (active-version docs, else catalog) at save and rejects two slots that
+resolve to the same product, naming both; unresolvable refs stay allowed.
+`resolveBundleWithMaps` (engine.ts) independently blocks a bundle whose two slots
+resolve to one product_id, with a per-slot reason. Existing identical-ref
+rejection unchanged. Tests in `phase10-dup`.
+
+## M3 — bounded, batched public-endpoint cost
+**Measured (user probe, 40 bundles × 2 slots):** a listing call = **242 queries**;
+a productRef no-match = **82 queries**.
+**New behaviour →** SQL pre-filter of matching bundle ids (hard-capped at 50,
+deterministic), then batched loads — one bundles query, one slots query, one
+visible-docs query, one variants query — resolved in memory.
+**After (same 40-bundle shop, asserted exactly in `phase10-lookup`):** a no-match
+product lookup = **3 queries**; a matching lookup = **7 queries**, independent of
+bundle count. Results identical to the unbatched version (all prior phase10 tests
+pass unchanged). No timing numbers claimed (Phase 14).
+
+## M4 — cart id + total hygiene
+`Core.isNumericId` now rejects non-safe-integer ids (a 19-digit id → false; a
+15-digit id and `MAX_SAFE_INTEGER` → true), so `Number(variantId)` on the cart
+path can never round to a different variant. Bundle totals/line totals/ranges are
+computed with integer (BigInt) minor units scaled by the largest decimal count
+present (min 2) and formatted to a decimal string — no binary floating point
+(`money.ts`). Tests: `phase10-money` (0.1+0.2, 3-decimal, whole numbers, qty>1),
+`phase10-extension` (19- vs 15-digit), `phase10-bundles` (engine total).
+
+## M5 — docs
+`docs/PHASE10.md` gains the known-limitations (cart drawer/count refresh is
+theme-specific = Requires Verification; draft bundles accept own-shop beacon
+counts, advisory only) and a 10.1 section documenting M1–M4 incl. the query
+counts.
+
+## STATUS (10.1)
+PHASE 10.1 IMPLEMENTED & PG-VERIFIED (416 passed | 11 skipped). LIVE-PRISMA
+CONFIRMATION PENDING. PHASE 11 NOT STARTED.

@@ -1,4 +1,5 @@
 import type { Exec } from "~/lib/db/executor";
+import { Params } from "~/lib/search/filters";
 import { classifyRef } from "~/lib/recommend/refs";
 
 /**
@@ -202,8 +203,83 @@ export function normalizeBundleInput(input: BundleInput): {
   };
 }
 
+/**
+ * M2(a): reject two slots that resolve to the SAME product even when entered by
+ * different refs (e.g. one by gid, one by handle). Resolution prefers the active
+ * index version's visible docs; with no active version it falls back to the
+ * catalog `product` table. Unresolvable refs are allowed (a draft bundle may
+ * reference a product not yet visible) — only refs that resolve to a shared
+ * product_id are rejected. (Identical normalised refs are already rejected by
+ * normalizeBundleInput.)
+ */
+export async function assertNoDuplicateResolvedProducts(
+  exec: Exec, shopId: string, slots: Required<SlotInput>[],
+): Promise<void> {
+  const gids: string[] = [];
+  const handlesLower: string[] = [];
+  for (const s of slots) {
+    if (s.productRefKind === "gid") gids.push(s.productRefValue);
+    else handlesLower.push(s.productRefValue.toLowerCase());
+  }
+  if (gids.length === 0 && handlesLower.length === 0) return;
+
+  const active = await exec.rows<{ id: string }>(
+    `SELECT id FROM index_version WHERE shop_id=$1::uuid AND status='active'`, [shopId],
+  );
+  const byGid = new Map<string, string>();
+  const byHandleLower = new Map<string, string>();
+
+  const pb = new Params();
+  const sid = pb.add(shopId);
+  const gidsParam = gids.length ? pb.add(gids) : null;
+  const handlesParam = handlesLower.length ? pb.add(handlesLower) : null;
+  // WHERE uses the real column expressions (not SELECT aliases).
+  const orClause = (gidExpr: string, handleExpr: string): string => {
+    const parts: string[] = [];
+    if (gidsParam) parts.push(`${gidExpr} = ANY(${gidsParam}::text[])`);
+    if (handlesParam) parts.push(`${handleExpr} = ANY(${handlesParam}::text[])`);
+    return parts.join(" OR ");
+  };
+  let rows: { product_id: string; gidcol: string; handle_l: string | null }[];
+  if (active[0]) {
+    const vid = pb.add(active[0].id);
+    rows = await exec.rows(
+      `SELECT product_id, shopify_product_gid AS gidcol, lower(doc->>'handle') AS handle_l
+       FROM product_search_doc
+       WHERE shop_id=${sid}::uuid AND index_version_id=${vid}::uuid
+         AND published=true AND status='ACTIVE' AND (${orClause("shopify_product_gid", "lower(doc->>'handle')")})`,
+      pb.values,
+    );
+  } else {
+    rows = await exec.rows(
+      `SELECT id AS product_id, shopify_product_gid AS gidcol, lower(handle) AS handle_l
+       FROM product WHERE shop_id=${sid}::uuid AND deleted_at IS NULL AND (${orClause("shopify_product_gid", "lower(handle)")})`,
+      pb.values,
+    );
+  }
+  for (const r of rows) {
+    byGid.set(r.gidcol, r.product_id);
+    if (r.handle_l) byHandleLower.set(r.handle_l, r.product_id);
+  }
+
+  const byProduct = new Map<string, number[]>();
+  slots.forEach((s, i) => {
+    const pid = s.productRefKind === "gid" ? byGid.get(s.productRefValue) : byHandleLower.get(s.productRefValue.toLowerCase());
+    if (!pid) return; // unresolvable → allowed
+    const arr = byProduct.get(pid) ?? [];
+    arr.push(i + 1); // 1-based slot number
+    byProduct.set(pid, arr);
+  });
+  for (const [, positions] of byProduct) {
+    if (positions.length > 1) {
+      throw new BundleValidationError(`Slots ${positions.join(" and ")} refer to the same product (duplicates are not allowed, even entered as different gid/handle).`);
+    }
+  }
+}
+
 export async function createBundle(exec: Exec, shopId: string, input: BundleInput): Promise<string> {
   const { bundle, slots } = normalizeBundleInput(input);
+  await assertNoDuplicateResolvedProducts(exec, shopId, slots);
   const count = (await exec.rows<{ n: number }>(`SELECT count(*)::int AS n FROM bundle WHERE shop_id=$1::uuid`, [shopId]))[0].n;
   if (count >= MAX_BUNDLES_PER_SHOP) throw new BundleValidationError(`Bundle limit reached (${MAX_BUNDLES_PER_SHOP}).`);
   const rows = await exec.rows<{ id: string }>(
@@ -235,6 +311,7 @@ async function insertSlots(exec: Exec, shopId: string, bundleId: string, slots: 
 /** Replace a bundle's fields + slots (within the caller's tenant transaction). */
 export async function updateBundle(exec: Exec, shopId: string, id: string, input: BundleInput): Promise<number> {
   const { bundle, slots } = normalizeBundleInput(input);
+  await assertNoDuplicateResolvedProducts(exec, shopId, slots);
   const n = await exec.run(
     `UPDATE bundle SET
        name=$3, description=$4, bundle_type=$5, status=$6, mix_pick_count=$7::int, placement=$8,

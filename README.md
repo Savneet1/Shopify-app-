@@ -2,7 +2,7 @@
 
 A production-grade, multi-tenant Shopify **Search, Filter & Discovery** app built
 on the current official **Shopify React Router** template, with PostgreSQL as the
-only data/search engine. This repository is at **Phase 10 (Bundles)**.
+only data/search engine. This repository is at **Phase 10.1 (Bundles; fix batch)**.
 
 > Phase gating is enforced. Implemented so far: Phase 1 (foundation: auth,
 > embedded shell, multi-tenancy + RLS, privacy webhooks, billing), Phase 2/2.1
@@ -31,7 +31,10 @@ only data/search engine. This repository is at **Phase 10 (Bundles)**.
 > active index, storefront Bundle block that adds to cart via the Ajax Cart API,
 > `proxy/bundles` card API, advisory bundle metrics — shoppers see the sum of
 > regular prices; **bundle discounts are not applied**, as that needs a Shopify
-> Function + `write_discounts`). Analytics/etc. are later phases. See
+> Function + `write_discounts`), Phase 10.1 (fix batch: product-page bundle
+> lookup by resolved identity so gid/handle slots match either lookup, duplicate
+> detection by resolved product, batched + bounded proxy cost, cart-id and
+> exact-decimal total hygiene). Analytics/etc. are later phases. See
 > `docs/PHASE*.md`. Stack unchanged: no Redis, no external search/AI,
 > PostgreSQL-only; scopes = `read_products` (Phase 10 adds no scope; real FBT
 > order data and real bundle discounts = Requires Verification).

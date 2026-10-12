@@ -261,6 +261,21 @@ describe("Phase 10.2 — bundle engine (visibility/availability)", () => {
     expect(none.length).toBe(0);
   });
 
+  it("M4b: engine total is exact integer-decimal math with qty > 1", async () => {
+    // variant.price is NUMERIC(12,2) so prices are 2-decimal at the engine; the
+    // 3-decimal exactness is proven in phase10-money. Here: 0.10×1 + 0.20×2 =
+    // 0.50 via BigInt minor units (the 0.1+0.2 float trap).
+    await seed(db, shop, { gid: PG(1), title: "Alpha", variants: [{ gid: VG(11), price: "0.10" }] });
+    await seed(db, shop, { gid: PG(2), title: "Bravo", variants: [{ gid: VG(21), price: "0.20" }] });
+    version = await build(db, shop);
+    const id = await make({ slots: [
+      { productRefKind: "gid", productRefValue: PG(1), variantMode: "fixed", variantGid: VG(11), quantity: 1 },
+      { productRefKind: "gid", productRefValue: PG(2), variantMode: "fixed", variantGid: VG(21), quantity: 2 },
+    ] });
+    const p = (await resolve(id)).payload!;
+    expect(p.total).toBe("0.50");
+  });
+
   it("CRUD round-trips and status changes", async () => {
     const id = await make();
     const got = (await db.withShopExec(shop, (e) => getBundle(e, shop, id)))!;

@@ -70,9 +70,13 @@
     if (!itemsEl || !addBtn) return;
 
     var base = String(cfg.proxyBase || "/apps/search").replace(/\/+$/, "");
+    // Prefer the product GID (stable identity); fall back to the handle. The API
+    // resolves either to the same product, so a gid-slot bundle still matches a
+    // handle page and vice versa (M1).
+    var productRef = cfg.seedGid || cfg.seed;
     var url;
     if (cfg.bundleId) url = base + "/bundles?bundle=" + encodeURIComponent(cfg.bundleId);
-    else if (cfg.seed) url = base + "/bundles?product=" + encodeURIComponent(cfg.seed) + "&limit=1";
+    else if (productRef) url = base + "/bundles?product=" + encodeURIComponent(productRef) + "&limit=1";
     else return; // nothing to anchor to
 
     fetchJson(url, cfg.timeoutMs).then(function (r) {
