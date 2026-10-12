@@ -31,7 +31,13 @@
       "recs_track_recent": {
         "label": "Remember recently viewed (this browser)",
         "info": "Stores recently viewed products in the shopper's own browser, only after analytics consent. Never sent to or stored on the server."
-      }
+      },
+      "bundle_heading": { "label": "Bundle heading" },
+      "bundle_id": {
+        "label": "Specific bundle ID (optional)",
+        "info": "Pin one bundle by its ID. Leave blank to show a bundle that includes the current product."
+      },
+      "bundle_show_vendor": { "label": "Show vendor in the bundle" }
     }
   }
 }

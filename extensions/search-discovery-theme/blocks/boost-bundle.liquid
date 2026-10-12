@@ -1,0 +1,113 @@
+{%- comment -%}
+  Phase 10 APP BLOCK — bundle widget (product template, section target). Shows a
+  visible+available bundle for the current product: its items (image, title,
+  variant selector where the slot lets the shopper pick, quantity, price), a live
+  TOTAL (sum of regular prices — this app applies no discount), and an
+  "Add bundle to cart" button using the theme's Ajax Cart API.
+
+  Additive & resilient: renders ALONGSIDE the product page; on any failure,
+  timeout, empty payload or unavailable bundle it renders nothing (reserved
+  space collapses, no big layout shift) — it never breaks the product or cart
+  page. Links via Core.toSameSitePath, images via Core.isSafeImageUrl, prices via
+  Core.formatPrice. textContent/DOM only. Cart adds use validated NUMERIC variant
+  ids only.
+{%- endcomment -%}
+
+{%- liquid
+  assign prefix = block.settings.proxy_prefix | default: 'apps'
+  assign subpath = block.settings.proxy_subpath | default: 'search'
+  assign seed_handle = ''
+  assign seed_gid = ''
+  if product
+    assign seed_handle = product.handle
+    assign seed_gid = product.id | prepend: 'gid://shopify/Product/'
+  endif
+-%}
+
+<div class="boost-bundle" id="boost-bundle-{{ block.id }}" data-boost-bundle hidden>
+  <h2 class="boost-bundle__heading">{{ block.settings.heading | escape }}</h2>
+  <div class="boost-bundle__items" data-boost-bundle-items></div>
+  <div class="boost-bundle__footer">
+    <span class="boost-bundle__total" data-boost-bundle-total></span>
+    <button type="button" class="boost-bundle__add" data-boost-bundle-add>{{ 'boost.bundle.add' | t }}</button>
+  </div>
+  <div class="boost-bundle__status" role="status" aria-live="polite" data-boost-bundle-status></div>
+</div>
+
+<script type="application/json" id="boost-bundle-config-{{ block.id }}">
+  {
+    "rootId": {{ 'boost-bundle-' | append: block.id | json }},
+    "proxyBase": {{ '/' | append: prefix | append: '/' | append: subpath | json }},
+    "allowedHosts": [{{ shop.permanent_domain | json }}, {{ shop.domain | json }}],
+    "imageHosts": ["cdn.shopify.com", {{ shop.permanent_domain | json }}, {{ shop.domain | json }}],
+    "currency": {{ shop.currency | json }},
+    "bundleId": {{ block.settings.bundle_id | default: '' | json }},
+    "seed": {{ seed_handle | json }},
+    "seedGid": {{ seed_gid | json }},
+    "showVendor": {% if block.settings.show_vendor == true %}true{% else %}false{% endif %},
+    "timeoutMs": {{ block.settings.timeout_ms | default: 2000 | json }},
+    "labels": {
+      "add": {{ 'boost.bundle.add' | t | json }},
+      "adding": {{ 'boost.bundle.adding' | t | json }},
+      "added": {{ 'boost.bundle.added' | t | json }},
+      "addError": {{ 'boost.bundle.add_error' | t | json }},
+      "total": {{ 'boost.bundle.total' | t | json }},
+      "unavailable": {{ 'boost.bundle.unavailable' | t | json }},
+      "quantity": {{ 'boost.bundle.quantity' | t | json }},
+      "variant": {{ 'boost.bundle.variant' | t | json }}
+    }
+  }
+</script>
+
+<link rel="stylesheet" href="{{ 'boost.css' | asset_url }}">
+<script src="{{ 'boost-core.js' | asset_url }}" defer></script>
+<script src="{{ 'boost-bundle.js' | asset_url }}" defer></script>
+
+{% schema %}
+{
+  "name": "Bundle",
+  "target": "section",
+  "settings": [
+    {
+      "type": "text",
+      "id": "heading",
+      "label": "t:boost.settings.bundle_heading.label",
+      "default": "Complete the set"
+    },
+    {
+      "type": "text",
+      "id": "bundle_id",
+      "label": "t:boost.settings.bundle_id.label",
+      "info": "t:boost.settings.bundle_id.info"
+    },
+    {
+      "type": "checkbox",
+      "id": "show_vendor",
+      "label": "t:boost.settings.bundle_show_vendor.label",
+      "default": false
+    },
+    {
+      "type": "text",
+      "id": "proxy_prefix",
+      "label": "t:boost.settings.proxy_prefix.label",
+      "default": "apps"
+    },
+    {
+      "type": "text",
+      "id": "proxy_subpath",
+      "label": "t:boost.settings.proxy_subpath.label",
+      "default": "search"
+    },
+    {
+      "type": "range",
+      "id": "timeout_ms",
+      "label": "t:boost.settings.timeout_ms.label",
+      "min": 500,
+      "max": 5000,
+      "step": 250,
+      "unit": "ms",
+      "default": 2000
+    }
+  ]
+}
+{% endschema %}

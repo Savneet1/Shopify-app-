@@ -14,6 +14,8 @@ import { claimWebhook, markWebhookProcessed } from "~/lib/webhooks/receipt.serve
 import { sha256Hex } from "~/lib/webhooks/hmac.server";
 import { getRecommendations } from "~/lib/recommend/engine";
 import { recordSignal } from "~/lib/recommend/signals";
+import { createBundle } from "~/lib/bundles/model";
+import { resolveBundleForStorefront } from "~/lib/bundles/engine";
 
 /**
  * Prisma reality check (#4a): exercise the PRODUCTION data path — runFullSync +
@@ -276,6 +278,51 @@ describe("Prisma-backed integration (production withShopExec path)", () => {
     for (const path of ["proxy.recommendations", "proxy.rec-event"]) {
       const mod: any = await import(`~/routes/${path}`);
       const req = new Request(`https://app.example.com/${path.replace(".", "/")}?type=similar&seed=x&shop=shop-a.myshopify.com`);
+      let status = 0;
+      try {
+        const res: any = await mod.loader({ request: req, params: {}, context: {} });
+        status = res && typeof res.status === "number" ? res.status : 0;
+      } catch (e: any) {
+        if (e instanceof Response) status = e.status;
+        else throw e;
+      }
+      expect(status, path).toBe(400);
+    }
+  });
+
+  it("Phase 10 bundles via the production Prisma path", async (ctx) => {
+    if (!prismaOk) return ctx.skip();
+    const shopId = await resolveShopId("shop-a.myshopify.com");
+    await withShopExec(shopId, async (e) => {
+      for (const [n, vn] of [["800", "8001"], ["801", "8011"]] as const) {
+        const { id } = await upsertProduct(e, shopId, {
+          shopifyProductGid: `gid://shopify/Product/${n}`, title: `Bundle Item ${n}`, handle: n, vendor: "Acme",
+          productType: "Kit", status: "ACTIVE", onlineStoreUrl: `https://shop.test/products/${n}`, productCreatedAt: "2024-05-01T00:00:00Z",
+        });
+        await upsertVariant(e, shopId, id, { shopifyVariantGid: `gid://shopify/ProductVariant/${vn}`, sku: `K-${n}`, price: "12.50", availableForSale: true });
+      }
+    });
+    const v = await withShopExec(shopId, (e) => createIndexVersion(e, shopId, "full", 2));
+    await withShopExec(shopId, (e) => buildDocs(e, shopId, v.id));
+    await withShopExec(shopId, (e) => validateIndexVersion(e, shopId, v.id, 2));
+    await withShopExec(shopId, (e) => activateIndexVersion(e, shopId, v.id));
+    const id = await withShopExec(shopId, (e) => createBundle(e, shopId, {
+      name: "Prisma Kit", bundleType: "fixed", status: "active",
+      slots: [
+        { productRefKind: "gid", productRefValue: "gid://shopify/Product/800", variantMode: "customer_picks", quantity: 1 },
+        { productRefKind: "gid", productRefValue: "gid://shopify/Product/801", variantMode: "customer_picks", quantity: 2 },
+      ],
+    }));
+    const payload = await withShopExec(shopId, (e) => resolveBundleForStorefront(e, shopId, id, new Date("2026-06-01T00:00:00Z")));
+    expect(payload).not.toBeNull();
+    expect(payload!.total).toBe("37.50"); // 12.50×1 + 12.50×2
+  });
+
+  it("unsigned bundles / bundle-event App Proxy requests -> HTTP 400", async (ctx) => {
+    if (!prismaOk) return ctx.skip();
+    for (const path of ["proxy.bundles", "proxy.bundle-event"]) {
+      const mod: any = await import(`~/routes/${path}`);
+      const req = new Request(`https://app.example.com/${path.replace(".", "/")}?shop=shop-a.myshopify.com`);
       let status = 0;
       try {
         const res: any = await mod.loader({ request: req, params: {}, context: {} });

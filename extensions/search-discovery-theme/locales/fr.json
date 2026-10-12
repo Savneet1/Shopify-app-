@@ -32,6 +32,16 @@
     "recs": {
       "out_of_stock": "Épuisé",
       "unavailable": "Les recommandations sont momentanément indisponibles."
+    },
+    "bundle": {
+      "add": "Ajouter le lot au panier",
+      "adding": "Ajout…",
+      "added": "Ajouté au panier.",
+      "add_error": "Désolé, nous n'avons pas pu ajouter ce lot. Veuillez réessayer.",
+      "total": "Total",
+      "unavailable": "Ce lot est actuellement indisponible.",
+      "quantity": "Quantité",
+      "variant": "Variante"
     }
   }
 }

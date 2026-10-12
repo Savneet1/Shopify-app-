@@ -32,6 +32,16 @@
     "recs": {
       "out_of_stock": "Out of stock",
       "unavailable": "Recommendations are temporarily unavailable."
+    },
+    "bundle": {
+      "add": "Add bundle to cart",
+      "adding": "Adding…",
+      "added": "Added to cart.",
+      "add_error": "Sorry, we couldn't add this bundle. Please try again.",
+      "total": "Total",
+      "unavailable": "This bundle is currently unavailable.",
+      "quantity": "Quantity",
+      "variant": "Variant"
     }
   }
 }

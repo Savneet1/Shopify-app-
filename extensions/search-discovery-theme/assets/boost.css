@@ -130,3 +130,25 @@ a.boost-recs__card:focus-visible { outline: 2px solid var(--boost-focus, #1a56db
 .boost-recs__vendor { color: #666; font-size: .8rem; margin-top: 2px; }
 .boost-recs__price { margin-top: 4px; font-size: .9rem; }
 .boost-recs__oos { color: #a15c00; font-size: .78rem; margin-top: 4px; }
+
+/* Phase 10 — bundle widget (additive; revealed only when a bundle is available). */
+.boost-bundle { margin: 28px 0; min-height: 0; }
+.boost-bundle__heading { font-size: 1.2rem; margin: 0 0 12px; }
+.boost-bundle__items { display: flex; flex-direction: column; gap: 10px; }
+.boost-bundle__item { display: flex; gap: 12px; align-items: center; border: 1px solid #ececec; border-radius: 8px; padding: 10px; background: #fff; }
+.boost-bundle__img { width: 64px; height: 64px; object-fit: cover; border-radius: 6px; background: #f6f6f6; flex: 0 0 auto; }
+.boost-bundle__info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.boost-bundle__title { font-weight: 600; text-decoration: none; color: inherit; }
+.boost-bundle__title:hover { text-decoration: underline; }
+.boost-bundle__vendor { color: #666; font-size: .8rem; }
+.boost-bundle__qty { color: #555; font-size: .85rem; }
+.boost-bundle__variant, .boost-bundle__variant-fixed { margin-top: 4px; font-size: .9rem; max-width: 100%; }
+.boost-bundle__footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+.boost-bundle__total { font-weight: 700; }
+.boost-bundle__add { padding: 10px 16px; border-radius: 8px; border: 1px solid var(--boost-focus, #1a56db); background: var(--boost-focus, #1a56db); color: #fff; cursor: pointer; }
+.boost-bundle__add:disabled { opacity: .6; cursor: default; }
+.boost-bundle__add:focus-visible { outline: 2px solid var(--boost-focus, #1a56db); outline-offset: 2px; }
+.boost-bundle__status { margin-top: 8px; font-size: .9rem; min-height: 1.2em; }
+@media (max-width: 749px) {
+  .boost-bundle__item { flex-wrap: wrap; }
+}

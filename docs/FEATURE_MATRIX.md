@@ -248,6 +248,28 @@ version's visible docs. Docs: `docs/PHASE9.md`, report `docs/PHASE9_REPORT.md`.
 Live beacon/consent on a real store and real FBT order data are **Requires
 Verification**. Benchmarks remain **Phase 14**.
 
+## Phase 10 — Bundles (Implemented; Prisma execution pg-verified)
+
+Third-party services / scopes / deps / extensions added: **none**. Migration
+`0012_phase10_bundles` (3 tenant tables: `bundle`, `bundle_slot`,
+`bundle_signal_daily`; RLS enabled+forced; grants to `app_runtime`). Reads the
+active version's visible docs joined to the `variant` table; `docInsertSql`
+unchanged. Docs: `docs/PHASE10.md`, report `docs/PHASE10_REPORT.md`.
+
+| ID | Feature | Status | Class | Tests | Location |
+|---|---|---|---|---|---|
+| F10.1 | Bundle definitions + admin CRUD (`/app/bundles`, registered): fixed set / mix-and-match (N-of-M), 2..10 slots, fixed/customer-picks variant, qty 1..10, schedule (UTC+IANA), status, duplicate-product rejection, bounded + deterministic order | Implemented | FULLY | `phase10-bundles`, routing guard | `app/lib/bundles/model.ts`, `app/routes/app.bundles.tsx`, migration 0012 |
+| F10.2 | Visibility/availability: shown only if required slots are visible (published+ACTIVE) AND available (purchasable variant); else hidden entirely with per-slot blocking reasons; variant price/availability from the `variant` table (no docInsertSql change); follows swap/rollback; unknown ids → not shown; Phase 8 HIDE does not apply | Implemented | FULLY | `phase10-bundles` | `app/lib/bundles/engine.ts` |
+| F10.3 | Pricing honesty: shoppers see the sum of regular prices only; NO discount shown/applied (no write_discounts, no Function). Pure tested discount calculator (percent/amount/fixed price; minor units; rounding; never <0 / never > line totals) as reference logic; admin records an intended discount labelled "not applied" | Implemented (calculator + honesty) / **discount application NOT implemented** | FULLY (calc/display) / RV (real discount = scope + Function) | `phase10-discount`, `phase10-bundles` | `app/lib/bundles/discount.ts` |
+| F10.4 | Storefront Bundle block (product section): items + variant selectors + live total + "Add bundle to cart" via Ajax Cart API (`items[]`, numeric variant ids only, `_bundle_id`/`_bundle_slot` properties), aria-live status, reserved space, silent no-op when unavailable, honest partial-failure handling; textContent-only; en+fr parity; schema-default checkbox form | Implemented | FULLY (logic/static) / RV (live theme + cart API atomicity + locale-prefixed root) | `phase10-extension` | `extensions/.../blocks/boost-bundle.liquid`, `assets/boost-bundle.js`, `boost-core.js` (cartAddUrl/isNumericId) |
+| F10.5 | API `proxy/bundles` (signed via handleProxy, rate-limited, never-5xx, bounded input, card payload) + admin preview (exact payload + per-slot blocking reasons) | Implemented | FULLY (logic) / RV (live proxy) | `phase10-bundles`, routing guard, `prisma-integration` (CI 400) | `app/routes/proxy.bundles.tsx` |
+| F10.6 | Aggregate metrics `bundle_signal_daily` (views + add-to-cart) via hardened public beacon (uuid-before-SQL, bounded, never-throws, aggregate-only, own-shop only); window + retention purge in the existing maintenance tick; admin shows advisory counts | Implemented | FULLY (engine) / RV (live beacon) | `phase10-signals` | `app/lib/bundles/signals.ts`, `app/routes/proxy.bundle-event.tsx`, `app/lib/jobs/maintenance.ts` |
+| F10.7 | Invariants: gating (draft/unpublished/OOS/deleted/other-shop hide the whole bundle), swap/rollback, real-shaped payload through Core helpers, beacon hostile-input, retention(injected clock), RLS + cross-shop on every table, extension static checks, routing-guard coverage; no-bundles byte-identical | Implemented | FULLY | `phase10-*` | — |
+
+Real bundle discounts (write_discounts + Shopify Function), the cart API's
+partial-failure behaviour, Markets/locale-prefixed cart root, and live
+theme/beacon are **Requires Verification**. Benchmarks remain **Phase 14**.
+
 ## Later phases (Planned — preserved, not implemented)
 
 | ID | Area | Status | Phase | Notes / class |
@@ -255,7 +277,7 @@ Verification**. Benchmarks remain **Phase 14**.
 | F7 | Theme App Extension, mobile, URL state, a11y, Dawn + 2 themes, vintage investigation | **Implemented** | 7 | See the Phase 7 section above. Progressive enhancement; native search survives app outage. Live store/theme = Requires Verification. |
 | F8 | Merchandising (pin/boost/demote/hide/banners/schedule) + A/B testing | **Implemented** | 8 | See the Phase 8 section above. Inside the one planner; aggregate-only A/B; consent gating = Requires Verification. |
 | F9 | Recommendations (similar/related/FBT/trending/recently-viewed) | **Implemented** | 9 | See the Phase 9 section above. Rule-based; PostgreSQL-only; no new scope. Real FBT order data (`read_orders`/protected/`read_all_orders`) + live beacon/consent = **Requires Verification**. |
-| F10 | Bundles | Planned | 10 | Certain bundle discounts require **Shopify Functions** — Requires Verification. |
+| F10 | Bundles (definition / display / add-to-cart) | **Implemented** | 10 | See the Phase 10 section above. Bundle definition, visible/available gating, storefront add-to-cart and advisory metrics are FULLY implemented; **discounts are NOT implemented** — a real bundle discount needs the `write_discounts` scope + a deployed **Shopify Function** (Requires Verification). |
 | F11 | Analytics (partitioned `analytics_event`, typed views, CSV), Web Pixel, attribution | Planned | 11 | No IP storage; Web Pixel sandbox/consent = Requires Verification. |
 | F12 | Back-in-stock, pre-order, countdown, email delivery | Planned | 12 | Email provider-agnostic; pre-order/checkout limits = Requires Verification. |
 | F13 | Markets, i18n, B2B, Combined Listings | Planned | 13 | Plan/availability dependent = Requires Verification. |

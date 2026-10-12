@@ -450,6 +450,26 @@
     return parseRecentIds(list, max).join(",");
   }
 
+  // ---- Phase 10: Ajax cart add URL (pure) ----
+  /**
+   * cartAddUrl(root): build the theme's Ajax cart-add endpoint from
+   * window.Shopify.routes.root (e.g. "/" or "/en-gb/"). A missing/odd root falls
+   * back to "/". Markets/locale prefixes beyond what `root` carries are Phase 13
+   * (Requires Verification). Only ever returns a root-relative path.
+   */
+  function cartAddUrl(root) {
+    var r = (root == null || String(root).charAt(0) !== "/") ? "/" : String(root);
+    if (r.charAt(r.length - 1) !== "/") r += "/";
+    // guard against control chars / protocol-relative tricks sneaking through
+    if (r.charAt(1) === "/" || /[\u0000-\u001f]/.test(r)) r = "/";
+    return r + "cart/add.js";
+  }
+
+  /** isNumericId(v): a bare positive integer id string (for cart variant ids). */
+  function isNumericId(v) {
+    return typeof v === "string" ? /^[0-9]{1,19}$/.test(v) : (typeof v === "number" && isFinite(v) && v > 0 && Math.floor(v) === v);
+  }
+
   /** Simple per-reader-independent debounce helper (used by the glue; pure). */
   function makeDebouncer(setTimeoutFn, clearTimeoutFn) {
     var st = setTimeoutFn || (typeof setTimeout !== "undefined" ? setTimeout : null);
@@ -485,5 +505,7 @@
     parseRecentIds: parseRecentIds,
     pushRecentId: pushRecentId,
     serializeRecentIds: serializeRecentIds,
+    cartAddUrl: cartAddUrl,
+    isNumericId: isNumericId,
   };
 });

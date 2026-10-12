@@ -1,5 +1,6 @@
 import type { Exec } from "~/lib/db/executor";
 import { purgeOldSignals, RETENTION_DAYS, PURGE_BATCH_SIZE } from "~/lib/recommend/signals";
+import { purgeOldBundleSignals } from "~/lib/bundles/signals";
 
 /**
  * Scheduled reconciliation (G8). A periodic tick enumerates INSTALLED shops
@@ -57,13 +58,17 @@ export async function runSignalRetention(
   const ids = await selectInstalledShops(rootExec);
   let deleted = 0;
   for (const id of ids) {
-    deleted += await runner(id, (e) =>
-      purgeOldSignals(e, id, {
+    deleted += await runner(id, async (e) => {
+      // Product trending signals (Phase 9.1) and bundle signals (Phase 10.6)
+      // share this per-shop retention pass — same bounded-batch discipline.
+      const a = await purgeOldSignals(e, id, {
         retentionDays: opts.retentionDays ?? RETENTION_DAYS,
         batchSize: opts.batchSize ?? PURGE_BATCH_SIZE,
         now: opts.now,
-      }),
-    );
+      });
+      const b = await purgeOldBundleSignals(e, id, { now: opts.now });
+      return a + b;
+    });
   }
   return deleted;
 }

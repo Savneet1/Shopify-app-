@@ -31,7 +31,13 @@
       "recs_track_recent": {
         "label": "Mémoriser les produits consultés (ce navigateur)",
         "info": "Stocke les produits récemment consultés dans le navigateur du client, uniquement après consentement analytique. Jamais envoyé ni stocké sur le serveur."
-      }
+      },
+      "bundle_heading": { "label": "Titre du lot" },
+      "bundle_id": {
+        "label": "ID de lot spécifique (facultatif)",
+        "info": "Épingler un lot par son ID. Laisser vide pour afficher un lot contenant le produit actuel."
+      },
+      "bundle_show_vendor": { "label": "Afficher le fournisseur dans le lot" }
     }
   }
 }
