@@ -62,6 +62,13 @@ async function eraseShopData(tx: TenantTx, shopId: string): Promise<void> {
   await tx.market.deleteMany({ where: { shopId } });
   await tx.themeCompatReport.deleteMany({ where: { shopId } });
   await tx.billingSubscription.deleteMany({ where: { shopId } });
+  // Phase 11: analytics rows are not Prisma-modelled (raw SQL, RLS-bound). Wipe
+  // them explicitly on shop/redact. (The FK is ON DELETE CASCADE too, so an
+  // owner-run shop-row delete also clears them — this is the belt-and-braces
+  // explicit path within the shop's tenant context.)
+  await tx.$executeRawUnsafe(`DELETE FROM analytics_event WHERE shop_id = $1::uuid`, shopId);
+  await tx.$executeRawUnsafe(`DELETE FROM analytics_rollup_daily WHERE shop_id = $1::uuid`, shopId);
+  await tx.$executeRawUnsafe(`DELETE FROM analytics_settings WHERE shop_id = $1::uuid`, shopId);
   // webhook_receipt + data_deletion_request are audit records; retained.
   await tx.shop.update({
     where: { id: shopId },

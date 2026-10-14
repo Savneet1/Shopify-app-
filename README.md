@@ -2,7 +2,7 @@
 
 A production-grade, multi-tenant Shopify **Search, Filter & Discovery** app built
 on the current official **Shopify React Router** template, with PostgreSQL as the
-only data/search engine. This repository is at **Phase 10.1 (Bundles; fix batch)**.
+only data/search engine. This repository is at **Phase 11 (Analytics)**.
 
 > Phase gating is enforced. Implemented so far: Phase 1 (foundation: auth,
 > embedded shell, multi-tenancy + RLS, privacy webhooks, billing), Phase 2/2.1
@@ -34,10 +34,17 @@ only data/search engine. This repository is at **Phase 10.1 (Bundles; fix batch)
 > Function + `write_discounts`), Phase 10.1 (fix batch: product-page bundle
 > lookup by resolved identity so gid/handle slots match either lookup, duplicate
 > detection by resolved product, batched + bounded proxy cost, cart-id and
-> exact-decimal total hygiene). Analytics/etc. are later phases. See
-> `docs/PHASE*.md`. Stack unchanged: no Redis, no external search/AI,
-> PostgreSQL-only; scopes = `read_products` (Phase 10 adds no scope; real FBT
-> order data and real bundle discounts = Requires Verification).
+> exact-decimal total hygiene), Phase 11 (first-party search analytics:
+> month-partitioned `analytics_event` with RLS on parent and every partition,
+> opt-in privacy modes with PII redaction, a signed batch ingestion beacon +
+> consent-gated storefront emitters, windowed reports + A/B z-test readout +
+> last-click attribution, and an admin dashboard with CSV export —
+> **OFF by default; no IP/customer identifiers stored; purchase attribution and
+> Web Pixel are built unwired and need `write_pixels`/`read_customer_events` =
+> Requires Verification**). Later phases to follow. See
+> `docs/PHASE*.md`. Stack unchanged: no Redis, no external search/AI/analytics,
+> PostgreSQL-only; scopes = `read_products` (Phase 11 adds no scope; purchase
+> attribution / Web Pixel / real bundle discounts = Requires Verification).
 
 ## Stack (Phase 1)
 

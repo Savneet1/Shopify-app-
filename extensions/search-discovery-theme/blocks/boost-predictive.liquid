@@ -23,6 +23,7 @@
     "proxyBase": {{ '/' | append: prefix | append: '/' | append: subpath | json }},
     "allowedHosts": [{{ shop.permanent_domain | json }}, {{ shop.domain | json }}],
     "abTesting": {% if block.settings.ab_testing == false %}false{% else %}true{% endif %},
+    "analytics": {% if block.settings.analytics == true %}true{% else %}false{% endif %},
     "timeoutMs": {{ block.settings.timeout_ms | default: 2000 | json }},
     "debounceMs": {{ block.settings.debounce_ms | default: 150 | json }},
     "labels": {
@@ -35,6 +36,7 @@
 
 <link rel="stylesheet" href="{{ 'boost.css' | asset_url }}">
 <script src="{{ 'boost-core.js' | asset_url }}" defer></script>
+<script src="{{ 'boost-analytics.js' | asset_url }}" defer></script>
 <script src="{{ 'boost-predictive.js' | asset_url }}" defer></script>
 
 {% schema %}
@@ -80,6 +82,13 @@
       "step": 50,
       "unit": "ms",
       "default": 150
+    },
+    {
+      "type": "checkbox",
+      "id": "analytics",
+      "label": "t:boost.settings.analytics.label",
+      "info": "t:boost.settings.analytics.info",
+      "default": false
     },
     {
       "type": "checkbox",

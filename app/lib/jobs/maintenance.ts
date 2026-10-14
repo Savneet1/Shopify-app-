@@ -1,6 +1,10 @@
 import type { Exec } from "~/lib/db/executor";
 import { purgeOldSignals, RETENTION_DAYS, PURGE_BATCH_SIZE } from "~/lib/recommend/signals";
 import { purgeOldBundleSignals } from "~/lib/bundles/signals";
+import {
+  purgeOldAnalyticsEvents, purgeOldAnalyticsRollup, maintainAnalyticsPartitions,
+  type PartitionMaintenanceResult,
+} from "~/lib/analytics/retention";
 
 /**
  * Scheduled reconciliation (G8). A periodic tick enumerates INSTALLED shops
@@ -59,16 +63,30 @@ export async function runSignalRetention(
   let deleted = 0;
   for (const id of ids) {
     deleted += await runner(id, async (e) => {
-      // Product trending signals (Phase 9.1) and bundle signals (Phase 10.6)
-      // share this per-shop retention pass — same bounded-batch discipline.
+      // Product trending signals (Phase 9.1), bundle signals (Phase 10.6) and
+      // analytics events/rollup (Phase 11) share this per-shop retention pass —
+      // same bounded-batch discipline, all RLS-scoped to the shop.
       const a = await purgeOldSignals(e, id, {
         retentionDays: opts.retentionDays ?? RETENTION_DAYS,
         batchSize: opts.batchSize ?? PURGE_BATCH_SIZE,
         now: opts.now,
       });
       const b = await purgeOldBundleSignals(e, id, { now: opts.now });
-      return a + b;
+      const c = await purgeOldAnalyticsEvents(e, id, { now: opts.now });
+      const d = await purgeOldAnalyticsRollup(e, id, { now: opts.now });
+      return a + b + c + d;
     });
   }
   return deleted;
+}
+
+/**
+ * Phase 11 — global analytics partition maintenance. Runs on the root/owner
+ * path of the tick (NOT per shop): ensure current + next 2 months exist, drop
+ * partitions older than the hard cap. Reuses the owner-owned definer functions.
+ */
+export async function runAnalyticsPartitionMaintenance(
+  rootExec: Exec, opts: { now?: Date } = {},
+): Promise<PartitionMaintenanceResult> {
+  return maintainAnalyticsPartitions(rootExec, opts);
 }

@@ -126,6 +126,12 @@
 
     function announce(msg) { live.textContent = ""; live.textContent = msg; }
 
+    // Phase 11: fire-and-forget analytics emission (opt-in per block).
+    function emit(ev) {
+      if (cfg.analytics !== true) return;
+      try { if (window.BoostAnalytics) window.BoostAnalytics.track(base, ev); } catch (e) {}
+    }
+
     function withToken(url) {
       var abt = currentToken();
       return abt ? url + (url.indexOf("?") >= 0 ? "&" : "?") + "abt=" + encodeURIComponent(abt) : url;
@@ -255,6 +261,7 @@
             else { arr = arr.filter(function (v) { return v !== opt.value; }); }
             state[field] = arr;
             state.page = 1;
+            emit({ eventType: "filter_applied", surface: "search_page", query: state.q });
             apply();
           });
           label.appendChild(cb);
@@ -346,7 +353,10 @@
         if (!p.available) meta.appendChild(el("span", "boost-card__oos", t(cfg, "outOfStock", "Out of stock")));
         a.appendChild(meta);
         // A click on a result is a click for every active experiment variant.
-        a.addEventListener("click", function () { recordClicks({ experiments: lastExperiments }); });
+        a.addEventListener("click", function () {
+          recordClicks({ experiments: lastExperiments });
+          emit({ eventType: "result_click", surface: "search_page", query: state.q, productGid: p.gid, position: p.position });
+        });
         li.appendChild(a);
         grid.appendChild(li);
       });
@@ -426,7 +436,12 @@
           // relative path so it stays on the visitor's origin).
           if (data.redirect) {
             var rpath = Core.toSameSitePath(data.redirect, cfg.allowedHosts, window.location.hostname);
-            if (rpath) { window.location.assign(rpath); return; }
+            if (rpath) { emit({ eventType: "redirect_followed", surface: "redirect", query: state.q }); window.location.assign(rpath); return; }
+          }
+          // Phase 11: one search event per completed query (+ zero-result).
+          if (state.q) {
+            emit({ eventType: "search_performed", surface: "search_page", query: state.q, resultCount: data.total || 0 });
+            if ((data.total || 0) === 0) emit({ eventType: "search_zero_result", surface: "search_page", query: state.q, resultCount: 0 });
           }
           lastExperiments = (data && Array.isArray(data.experiments)) ? data.experiments : [];
           maybeCreateToken(data); // lazily create the token once an experiment is running (next request)

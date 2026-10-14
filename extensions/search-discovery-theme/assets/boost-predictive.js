@@ -102,7 +102,7 @@
         // same-site relative path via the allowlist (fail-closed).
         var path = Core.toSameSitePath(p.url, cfg.allowedHosts, window.location.hostname);
         if (!path) return; // drop any non-allowed URL
-        items.push({ type: "product", title: p.title || "", url: path });
+        items.push({ type: "product", title: p.title || "", url: path, gid: p.gid });
       });
       suggestions.forEach(function (s) {
         items.push({ type: "suggestion", title: (s && s.text) || "", url: null });
@@ -128,12 +128,19 @@
       renderActive();
     }
 
+    function emitAnalytics(ev) {
+      if (cfg.analytics !== true) return;
+      try { if (window.BoostAnalytics) window.BoostAnalytics.track(base, ev); } catch (e) {}
+    }
+
     function choose(i) {
       var it = items[i];
       if (!it) return;
       if (it.type === "product" && it.url) {
+        emitAnalytics({ eventType: "predictive_click", surface: "predictive", query: (input.value || "").trim(), productGid: it.gid });
         window.location.assign(it.url); // already a validated same-site path
       } else {
+        emitAnalytics({ eventType: "suggestion_click", surface: "predictive", query: it.title });
         input.value = it.title;
         submitNative();
       }

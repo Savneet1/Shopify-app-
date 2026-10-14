@@ -16,6 +16,9 @@ import { getRecommendations } from "~/lib/recommend/engine";
 import { recordSignal } from "~/lib/recommend/signals";
 import { createBundle } from "~/lib/bundles/model";
 import { resolveBundleForStorefront } from "~/lib/bundles/engine";
+import { saveAnalyticsSettings } from "~/lib/analytics/settings";
+import { ingestEvents } from "~/lib/analytics/store";
+import { resolveWindow, summaryReport } from "~/lib/analytics/reports";
 
 /**
  * Prisma reality check (#4a): exercise the PRODUCTION data path — runFullSync +
@@ -333,5 +336,40 @@ describe("Prisma-backed integration (production withShopExec path)", () => {
       }
       expect(status, path).toBe(400);
     }
+  });
+
+  it("Phase 11 analytics ingest + report via the production Prisma path", async (ctx) => {
+    if (!prismaOk) return ctx.skip();
+    const shopId = await resolveShopId("shop-a.myshopify.com");
+    await withShopExec(shopId, (e) => saveAnalyticsSettings(e, shopId, { mode: "anonymous" }));
+    const now = new Date();
+    const r = await withShopExec(shopId, (e) => ingestEvents(e, shopId, [
+      { eventType: "search_performed", surface: "search_page", query: "prisma shoes", resultCount: 3 },
+      { eventType: "result_click", surface: "search_page", query: "prisma shoes", productGid: "gid://shopify/Product/1", position: 1 },
+      { eventType: "bogus" },
+    ], now));
+    expect(r.accepted).toBe(2);
+    expect(r.rejected).toBe(1);
+    const w = await withShopExec(shopId, (e) => resolveWindow(e, shopId, {}, now));
+    const s = await withShopExec(shopId, (e) => summaryReport(e, shopId, w));
+    expect(s.searches).toBe(1);
+    expect(s.clicks).toBe(1);
+  });
+
+  it("unsigned analytics-event App Proxy request -> HTTP 400", async (ctx) => {
+    if (!prismaOk) return ctx.skip();
+    const mod: any = await import("~/routes/proxy.analytics-event");
+    const req = new Request("https://app.example.com/proxy/analytics-event?shop=shop-a.myshopify.com", {
+      method: "POST", body: JSON.stringify({ events: [] }), headers: { "Content-Type": "application/json" },
+    });
+    let status = 0;
+    try {
+      const res: any = await mod.action({ request: req, params: {}, context: {} });
+      status = res && typeof res.status === "number" ? res.status : 0;
+    } catch (e: any) {
+      if (e instanceof Response) status = e.status;
+      else throw e;
+    }
+    expect(status).toBe(400);
   });
 });

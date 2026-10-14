@@ -5,13 +5,27 @@
         "label": "Sélecteur CSS du champ de recherche",
         "info": "Le champ de recherche du thème. La valeur par défaut convient à la plupart des thèmes (dont Dawn)."
       },
-      "proxy_prefix": { "label": "Préfixe App Proxy" },
-      "proxy_subpath": { "label": "Sous-chemin App Proxy" },
-      "timeout_ms": { "label": "Délai d'expiration" },
-      "debounce_ms": { "label": "Anti-rebond de saisie" },
-      "per_page": { "label": "Résultats par page" },
-      "nl_enabled": { "label": "Analyse en langage naturel" },
-      "show_banners": { "label": "Afficher les bannières de merchandising" },
+      "proxy_prefix": {
+        "label": "Préfixe App Proxy"
+      },
+      "proxy_subpath": {
+        "label": "Sous-chemin App Proxy"
+      },
+      "timeout_ms": {
+        "label": "Délai d'expiration"
+      },
+      "debounce_ms": {
+        "label": "Anti-rebond de saisie"
+      },
+      "per_page": {
+        "label": "Résultats par page"
+      },
+      "nl_enabled": {
+        "label": "Analyse en langage naturel"
+      },
+      "show_banners": {
+        "label": "Afficher les bannières de merchandising"
+      },
       "ab_testing": {
         "label": "Activer les expériences A/B sur la vitrine",
         "info": "Lorsqu'activé, un jeton de visiteur anonyme n'est utilisé qu'après le consentement analytique."
@@ -20,24 +34,48 @@
         "label": "Clé de facette metafield",
         "info": "La clé de facette metafield configurée (par défaut : material)."
       },
-      "accent_bg": { "label": "Arrière-plan d'accentuation" },
-      "focus_color": { "label": "Couleur du contour de focus" },
-      "recs_heading": { "label": "Titre" },
-      "recs_type": { "label": "Type de recommandation" },
-      "recs_count": { "label": "Nombre de produits" },
-      "recs_columns": { "label": "Colonnes" },
-      "recs_show_price": { "label": "Afficher le prix" },
-      "recs_show_vendor": { "label": "Afficher le fournisseur" },
+      "accent_bg": {
+        "label": "Arrière-plan d'accentuation"
+      },
+      "focus_color": {
+        "label": "Couleur du contour de focus"
+      },
+      "recs_heading": {
+        "label": "Titre"
+      },
+      "recs_type": {
+        "label": "Type de recommandation"
+      },
+      "recs_count": {
+        "label": "Nombre de produits"
+      },
+      "recs_columns": {
+        "label": "Colonnes"
+      },
+      "recs_show_price": {
+        "label": "Afficher le prix"
+      },
+      "recs_show_vendor": {
+        "label": "Afficher le fournisseur"
+      },
       "recs_track_recent": {
         "label": "Mémoriser les produits consultés (ce navigateur)",
         "info": "Stocke les produits récemment consultés dans le navigateur du client, uniquement après consentement analytique. Jamais envoyé ni stocké sur le serveur."
       },
-      "bundle_heading": { "label": "Titre du lot" },
+      "bundle_heading": {
+        "label": "Titre du lot"
+      },
       "bundle_id": {
         "label": "ID de lot spécifique (facultatif)",
         "info": "Épingler un lot par son ID. Laisser vide pour afficher un lot contenant le produit actuel."
       },
-      "bundle_show_vendor": { "label": "Afficher le fournisseur dans le lot" }
+      "bundle_show_vendor": {
+        "label": "Afficher le fournisseur dans le lot"
+      },
+      "analytics": {
+        "label": "Collecter des statistiques de recherche",
+        "info": "Envoie des événements de recherche agrégés et respectueux de la vie privée vers vos statistiques admin. Désactivé par défaut; un identifiant de session n'est utilisé qu'avec le consentement analytique."
+      }
     }
   }
 }

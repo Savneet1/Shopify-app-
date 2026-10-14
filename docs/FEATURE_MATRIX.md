@@ -270,6 +270,31 @@ Real bundle discounts (write_discounts + Shopify Function), the cart API's
 partial-failure behaviour, Markets/locale-prefixed cart root, and live
 theme/beacon are **Requires Verification**. Benchmarks remain **Phase 14**.
 
+## Phase 11 — Analytics (Implemented for first-party events; Prisma execution pg-verified)
+
+Third-party services / scopes / deps / extensions added: **none**. Migration
+`0013_phase11_analytics` (`analytics_event` partitioned by month + monthly
+partitions, `analytics_settings`, `analytics_rollup_daily`; RLS enabled+forced on
+parent AND every partition; `app_runtime` DML on the parent only; owner-owned
+`SECURITY DEFINER` partition functions). No IP/user-agent/fingerprint/customer
+identifier stored. OFF by default. Docs: `docs/PHASE11.md`, report
+`docs/PHASE11_REPORT.md`.
+
+| ID | Feature | Status | Class | Tests | Location |
+|---|---|---|---|---|---|
+| F11.1 | Event model: `analytics_event` RANGE-partitioned monthly; closed enums; server-stamped `occurred_at`; RLS on parent AND every partition; `app_runtime` DML on parent only (partition direct access refused); owner definer partition create/drop/list; no DEFAULT partition; maintenance-tick create-ahead + drop past hard cap | Implemented | FULLY | `phase11-partitions-rls`, `phase11-engine` | migration 0013, `app/lib/analytics/retention.ts`, `app/lib/jobs/maintenance.ts` |
+| F11.2 | Privacy: per-shop `analytics_mode` off/anonymous/consented_sessions (default off), retention (90 default, 395 max); fail-closed consent gate; PII redaction (emails/phones/cards/URLs/tokens → `[redacted]`+flag) before normalize; compliance (no customer ids → customers/* no_data; shop/redact + uninstall wipe); delete-all | Implemented | FULLY | `phase11-units`, `phase11-engine` | `app/lib/analytics/settings.ts`, `events.ts`, `store.ts`, `webhooks.compliance.server.ts` |
+| F11.3 | Ingestion `proxy/analytics-event` (signed, rate-limited, never-5xx): batch ≤20, 16 KB cap, per-field validation before SQL, unknown keys rejected, invalid dropped individually, mode-off stores nothing, server time; storefront emitters in results/predictive/recommendation/bundle blocks (consent-gated sendBeacon, per-block toggle, silent no-op); no server-hot-path writes | Implemented | FULLY (logic/static) / RV (live theme) | `phase11-partitions-rls`, `phase11-extension`, `prisma-integration` (CI 400) | `app/routes/proxy.analytics-event.tsx`, `boost-analytics.js`, `boost-core.js` |
+| F11.4 | Reporting: searches, zero-result rate, CTR (session-free def), top queries, top zero-result, queries-no-clicks, add-to-cart-from-search rate, redirect usage, per-surface, daily trend — window always applied + clamped to retention; optional daily rollup (no raw text) + its purge; query counts (summary 2, list 1) | Implemented | FULLY | `phase11-engine` | `app/lib/analytics/reports.ts`, `retention.ts` |
+| F11.5 | A/B readout: per-variant searches/clicks/CTR/ATC-rate + two-proportion z-test above documented sample thresholds else "inconclusive"; never claims causal lift/revenue | Implemented | FULLY | `phase11-units`, `phase11-abtest-engine` | `app/lib/analytics/abtest.ts` |
+| F11.6 | Attribution: pure last-click within a consented session window; **purchase/revenue NOT implemented**; unwired Shopify customer-events → schema mapping (checkout_completed → null) | Implemented (first-party) / **Web Pixel + purchase attribution NOT implemented — needs scopes** | FULLY (pure) / RV (`write_pixels`+`read_customer_events`, order data) | `phase11-units` | `app/lib/analytics/attribution.ts`, `customer-events.ts` |
+| F11.7 | Admin `/app/analytics` (registered): settings, date range, inline-SVG/CSS reports from escaped values, A/B readout, delete-all (typed confirm, own shop); CSV export (hard row cap, streaming-safe, formula-injection protection: `= + - @` TAB/CR neutralized, RFC-4180 escaping) | Implemented | FULLY (logic/static) | `phase11-units`, routing guard | `app/routes/app.analytics.tsx`, `app.analytics.export.tsx`, `app/lib/analytics/csv.ts` |
+| F11.8 | Invariants: mode-off byte-identical; partition direct-access refused; cross-shop RLS on parent+partitions; hostile input never throws; CSV injection; redaction; z-test gates; 3 mutation-tested guards; routing-guard coverage; query counts | Implemented | FULLY | `phase11-*` | — |
+
+Web Pixel + `write_pixels`/`read_customer_events`, purchase/revenue attribution
+(order data), and live beacon/theme/consent are **Requires Verification**.
+Benchmarks remain **Phase 14**.
+
 ## Later phases (Planned — preserved, not implemented)
 
 | ID | Area | Status | Phase | Notes / class |
@@ -278,7 +303,7 @@ theme/beacon are **Requires Verification**. Benchmarks remain **Phase 14**.
 | F8 | Merchandising (pin/boost/demote/hide/banners/schedule) + A/B testing | **Implemented** | 8 | See the Phase 8 section above. Inside the one planner; aggregate-only A/B; consent gating = Requires Verification. |
 | F9 | Recommendations (similar/related/FBT/trending/recently-viewed) | **Implemented** | 9 | See the Phase 9 section above. Rule-based; PostgreSQL-only; no new scope. Real FBT order data (`read_orders`/protected/`read_all_orders`) + live beacon/consent = **Requires Verification**. |
 | F10 | Bundles (definition / display / add-to-cart) | **Implemented** | 10 | See the Phase 10 section above. Bundle definition, visible/available gating, storefront add-to-cart and advisory metrics are FULLY implemented; **discounts are NOT implemented** — a real bundle discount needs the `write_discounts` scope + a deployed **Shopify Function** (Requires Verification). |
-| F11 | Analytics (partitioned `analytics_event`, typed views, CSV), Web Pixel, attribution | Planned | 11 | No IP storage; Web Pixel sandbox/consent = Requires Verification. |
+| F11 | Analytics (partitioned `analytics_event`, typed reports, CSV, A/B readout, attribution) | **Implemented** | 11 | See the Phase 11 section above. First-party events FULLY implemented (OFF by default; no IP/customer ids stored); **purchase attribution + Web Pixel NOT implemented — need `write_pixels`/`read_customer_events`/order data = Requires Verification**. |
 | F12 | Back-in-stock, pre-order, countdown, email delivery | Planned | 12 | Email provider-agnostic; pre-order/checkout limits = Requires Verification. |
 | F13 | Markets, i18n, B2B, Combined Listings | Planned | 13 | Plan/availability dependent = Requires Verification. |
 | F14 | Performance, security hardening, large catalog | Planned | 14 | Targets (predictive ≤60ms p95@100k; search+facets ≤250ms@100k / ≤150ms@10k; typo ≤+30ms) — **not measured yet; do not claim as met**. |

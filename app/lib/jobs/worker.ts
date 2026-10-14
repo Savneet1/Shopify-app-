@@ -13,7 +13,7 @@ import {
   fetchCollectionNode,
 } from "~/lib/shopify/bulk.server";
 import { enqueueFullSync } from "./queue";
-import { runReconciliationTick, runSignalRetention } from "./maintenance";
+import { runReconciliationTick, runSignalRetention, runAnalyticsPartitionMaintenance } from "./maintenance";
 import { prismaRootExec } from "~/lib/db/root-exec.server";
 import { logger } from "~/lib/logger.server";
 
@@ -66,10 +66,16 @@ export async function startWorker(): Promise<PgBoss> {
       (shopId) => enqueueFullSync(shopId),
       process.env.RECONCILE_INTERVAL || "24 hours",
     );
-    // K2: same tick drains one bounded batch of expired trending signals per
-    // installed shop (RLS-scoped, short locks). No new queue.
+    // K2: same tick drains one bounded batch of expired trending/bundle/
+    // analytics rows per installed shop (RLS-scoped, short locks). No new queue.
     const purged = await runSignalRetention(prismaRootExec(), withShopExec);
-    logger.info({ enqueued: n, signalsPurged: purged }, "reconciliation tick");
+    // Phase 11: ensure analytics partitions ahead + drop ones past the hard cap
+    // (owner definer functions, global/not per-shop).
+    const parts = await runAnalyticsPartitionMaintenance(prismaRootExec());
+    logger.info(
+      { enqueued: n, signalsPurged: purged, partitionsEnsured: parts.ensured.length, partitionsDropped: parts.dropped },
+      "reconciliation tick",
+    );
   });
   await boss.schedule(
     QUEUE.maintenanceReconcile,

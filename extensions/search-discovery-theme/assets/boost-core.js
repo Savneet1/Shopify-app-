@@ -478,6 +478,37 @@
     return Number.isSafeInteger(n) && n > 0;
   }
 
+  // ---- Phase 11: analytics event shape + session helpers (pure) ----
+  var ANALYTICS_EVENT_TYPES = {
+    search_performed: 1, search_zero_result: 1, result_click: 1, predictive_click: 1,
+    suggestion_click: 1, redirect_followed: 1, add_to_cart_from_search: 1,
+    recommendation_click: 1, bundle_add_to_cart: 1, filter_applied: 1,
+  };
+  var ANALYTICS_SURFACES = { search_page: 1, predictive: 1, recommendation: 1, bundle: 1, redirect: 1 };
+
+  /** A new random session id: 24 chars of [A-Za-z0-9_-] (<=64, matches server). */
+  function newSessionId() {
+    var s = (Date.now().toString(36) + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2))
+      .replace(/[^A-Za-z0-9_-]/g, "").slice(0, 24);
+    return s.length >= 8 ? s : ("s" + s + "00000000").slice(0, 16);
+  }
+
+  /** Validate a client analytics event shape before it is queued/sent. Returns
+   * a trimmed event or null. Pure — mirrors the server's allow-list. */
+  function cleanAnalyticsEvent(ev) {
+    if (!ev || typeof ev !== "object") return null;
+    if (!ANALYTICS_EVENT_TYPES[ev.eventType]) return null;
+    if (!ANALYTICS_SURFACES[ev.surface]) return null;
+    var out = { eventType: ev.eventType, surface: ev.surface };
+    if (ev.query != null) out.query = String(ev.query).slice(0, 200);
+    if (ev.productGid != null && /^gid:\/\/shopify\/Product\/[0-9]{1,20}$/.test(String(ev.productGid))) out.productGid = String(ev.productGid);
+    if (ev.resultCount != null && isFinite(Number(ev.resultCount))) out.resultCount = Math.max(0, Math.floor(Number(ev.resultCount)));
+    if (ev.position != null && isFinite(Number(ev.position))) out.position = Math.max(0, Math.floor(Number(ev.position)));
+    if (ev.experimentId != null) out.experimentId = String(ev.experimentId);
+    if (ev.variant === "A" || ev.variant === "B" || ev.variant === "control") out.variant = ev.variant;
+    return out;
+  }
+
   /** Simple per-reader-independent debounce helper (used by the glue; pure). */
   function makeDebouncer(setTimeoutFn, clearTimeoutFn) {
     var st = setTimeoutFn || (typeof setTimeout !== "undefined" ? setTimeout : null);
@@ -515,5 +546,7 @@
     serializeRecentIds: serializeRecentIds,
     cartAddUrl: cartAddUrl,
     isNumericId: isNumericId,
+    newSessionId: newSessionId,
+    cleanAnalyticsEvent: cleanAnalyticsEvent,
   };
 });

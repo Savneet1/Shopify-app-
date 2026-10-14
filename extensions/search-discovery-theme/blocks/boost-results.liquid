@@ -40,6 +40,7 @@
     "nlEnabled": {% if block.settings.nl_enabled == false %}false{% else %}true{% endif %},
     "banners": {% if block.settings.show_banners == false %}false{% else %}true{% endif %},
     "abTesting": {% if block.settings.ab_testing == false %}false{% else %}true{% endif %},
+    "analytics": {% if block.settings.analytics == true %}true{% else %}false{% endif %},
     "metafieldKey": {{ block.settings.metafield_key | default: 'material' | json }},
     "timeoutMs": {{ block.settings.timeout_ms | default: 2000 | json }},
     "labels": {
@@ -70,6 +71,7 @@
 
 <link rel="stylesheet" href="{{ 'boost.css' | asset_url }}">
 <script src="{{ 'boost-core.js' | asset_url }}" defer></script>
+<script src="{{ 'boost-analytics.js' | asset_url }}" defer></script>
 <script src="{{ 'boost-results.js' | asset_url }}" defer></script>
 
 {% schema %}
@@ -116,6 +118,13 @@
       "label": "t:boost.settings.ab_testing.label",
       "info": "t:boost.settings.ab_testing.info",
       "default": true
+    },
+    {
+      "type": "checkbox",
+      "id": "analytics",
+      "label": "t:boost.settings.analytics.label",
+      "info": "t:boost.settings.analytics.info",
+      "default": false
     },
     {
       "type": "text",

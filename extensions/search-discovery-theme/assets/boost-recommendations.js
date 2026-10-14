@@ -87,7 +87,19 @@
     var card = el(href ? "a" : "div", "boost-recs__card");
     if (href) {
       card.setAttribute("href", href);
-      card.addEventListener("click", function () { beacon(cfg, p.gid || p.handle, "click"); });
+      card.addEventListener("click", function () {
+        beacon(cfg, p.gid || p.handle, "click");
+        if (cfg.analytics === true) {
+          try {
+            if (window.BoostAnalytics) {
+              window.BoostAnalytics.track(
+                String(cfg.proxyBase || "/apps/search").replace(/\/+$/, ""),
+                { eventType: "recommendation_click", surface: "recommendation", productGid: p.gid },
+              );
+            }
+          } catch (e) {}
+        }
+      });
     }
     // image (validated; never navigation)
     if (p.image && Core.isSafeImageUrl(p.image.url, cfg.imageHosts)) {

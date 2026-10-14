@@ -29,6 +29,9 @@ export default [
     route("recommendations", "routes/app.recommendations.tsx"),
     // Phase 10: bundles.
     route("bundles", "routes/app.bundles.tsx"),
+    // Phase 11: analytics dashboard + CSV export.
+    route("analytics", "routes/app.analytics.tsx"),
+    route("analytics/export", "routes/app.analytics.export.tsx"),
   ]),
 
   // App Proxy storefront endpoints (Phase 3). Shopify proxies
@@ -45,6 +48,8 @@ export default [
   // Phase 10: bundles endpoint + aggregate bundle view/add-to-cart beacon.
   route("proxy/bundles", "routes/proxy.bundles.tsx"),
   route("proxy/bundle-event", "routes/proxy.bundle-event.tsx"),
+  // Phase 11: analytics ingestion beacon.
+  route("proxy/analytics-event", "routes/proxy.analytics-event.tsx"),
 
   // Webhooks.
   route("webhooks/app/uninstalled", "routes/webhooks.app.uninstalled.tsx"),

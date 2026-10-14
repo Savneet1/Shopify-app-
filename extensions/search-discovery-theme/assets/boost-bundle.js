@@ -199,8 +199,19 @@
       }).then(function (res) {
         addBtn.disabled = false;
         // Do NOT assume atomicity on partial failure (Requires Verification).
-        if (res && res.ok) announce(statusEl, label(cfg, "added", "Added to cart."));
-        else announce(statusEl, label(cfg, "addError", "Couldn't add the bundle."));
+        if (res && res.ok) {
+          announce(statusEl, label(cfg, "added", "Added to cart."));
+          if (cfg.analytics === true) {
+            try {
+              if (window.BoostAnalytics) {
+                window.BoostAnalytics.track(
+                  String(cfg.proxyBase || "/apps/search").replace(/\/+$/, ""),
+                  { eventType: "bundle_add_to_cart", surface: "bundle" },
+                );
+              }
+            } catch (e) {}
+          }
+        } else announce(statusEl, label(cfg, "addError", "Couldn't add the bundle."));
       }).catch(function () {
         addBtn.disabled = false;
         announce(statusEl, label(cfg, "addError", "Couldn't add the bundle."));
