@@ -101,16 +101,111 @@ the Phase 7 routing guard (covers the 3 new routes) are all green.
 is pg-verified via node-postgres (identical SQL) and the production Prisma path
 is exercised by the self-skipping `prisma-integration` cases on hosted CI.
 
+## Phase 11.1 — fix batch (over Phase 11)
+
+Three findings from the Phase 11 review, fixed on top of `c6ba65a`. Migration 0013
+is untouched; everything ships as the additive, idempotent migration
+`0014_phase11_1_definer_hardening`.
+
+### N1 (CRITICAL — cross-tenant data destruction via SECURITY DEFINER)
+
+**Failing input:** as `app_runtime`, from any shop-scoped context,
+`SELECT app_drop_analytics_partitions_before('2100-01-01')` dropped **every**
+monthly partition of `analytics_event`, destroying all rows for **all** shops;
+`app_ensure_analytics_partition('9999-01-01')` (and `'1900-01-01'`, far-future
+months) created unbounded partitions. The functions trusted their `timestamptz`
+argument.
+
+**New behaviour (migration 0014, enforced in the database — defence in depth):**
+- `app_drop_analytics_partitions_before(p_cutoff)` computes a hard floor
+  `date_trunc('month', nowUTC − 395 days)` from the **real server clock** and uses
+  `effective = LEAST(requested, floor)`. No argument can drop a partition newer
+  than the 395-day cap. Normal tick use (`cutoff = now − 395d`) is unchanged.
+- `app_ensure_analytics_partition(p_month)` accepts only months in
+  `[current − 14, current + 3]` (UTC); anything else raises `22023` and creates
+  nothing.
+- Both keep `SECURITY DEFINER` + `SET search_path`, `REVOKE ALL FROM PUBLIC`,
+  `GRANT EXECUTE` to `app_runtime` only, and carry the threat-model comment.
+- The complete SECURITY DEFINER surface `app_runtime` can execute is audited in
+  `docs/PHASE11.md` (table below), and a test enumerates the catalog and fails if
+  any definer function executable by `app_runtime` is not in the explicit
+  allowlist. A second test asserts `app_analytics_hard_retention_days()` (SQL) ==
+  `PARTITION_RETENTION_DAYS` (app) == 395.
+
+| Function | Definer action | Cross-tenant surface | Why safe |
+| --- | --- | --- | --- |
+| `app_resolve_shop(text)` | upsert + return shop id | writes one shop row; returns its UUID | domain→id bootstrap; no tenant data read |
+| `app_shops_needing_full_sync()` | read shop sync flags | shop UUIDs + flags | scheduling metadata only |
+| `app_list_analytics_partitions()` | read catalog | partition names | metadata only |
+| `app_analytics_hard_retention_days()` | return `395` | none | pure constant |
+| `app_ensure_analytics_partition(timestamptz)` | DDL create | creates RLS-forced, un-granted partition | range-bounded `[now−14, now+3]` else `22023` |
+| `app_drop_analytics_partitions_before(timestamptz)` | DDL drop (destructive) | drops partitions | hard-floored `LEAST(requested, now−395d)` |
+
+**Tests (`test/phase11_1-definer.test.ts`, as `app_runtime`, both shops holding
+events):** drop `'2100-01-01'` destroys nothing and both shops keep their data; a
+genuinely-old cutoff drops only the old partition; ensure `9999`/`1900`/`now+4mo`/
+`now−15mo` all raise and create nothing; ensure `now`/`+1`/`+2`/`+3`/`−14mo` work
+and are idempotent; the allowlist + retention-constant tests above. The partition
+maintenance tick and ingestion still pass (`test/phase11-partitions-rls.test.ts`,
+reworked to real-clock months because the hardened functions anchor to real `now`).
+
+**Mutation test (performed):** removing the `LEAST` clamp via `CREATE OR REPLACE`
+and re-running the exploit-defeat test made `drop('2100-01-01')` drop every
+partition (`after == []`, both shops wiped) and the test **failed** as expected;
+re-applying migration 0014 restored the clamp and all 7 N1 tests pass again.
+
+### N2 (MUST — PII redaction was evadable)
+
+**Failing input:** `cleanQuery` redacted the **raw** text, then normalized; but the
+normalizer strips zero-width/format chars and folds full-width/Arabic-Indic digits,
+so obfuscated PII that did not match a pattern raw became a clean digit run **after**
+redaction and was stored unredacted — e.g. `4111​1111​1111​1111` (zero-width),
+`４１１１１１１１１１１１１１１１` (full-width card), `415‌555‌1234` (ZWNJ phone),
+`٤١٥٥٥٥١٢٣٤` (Arabic-Indic phone), `john.doe＠example.com` (full-width `@`),
+`john.doe@ex​ample.com` (zero-width in domain).
+
+**New behaviour:** canonicalize **before** redacting (NFKC, strip invisible/format
+chars, fold every `\p{Nd}` to ASCII, full-width `@`/`.`→ASCII), redact the canonical
+text, then `normalizeQuery`, then **redact again** on the normalized string;
+Unicode-aware email pattern; pre-bounded to 4000 chars; idempotent; never throws.
+The same redaction is applied to string values in event `properties`. Documented
+non-detections (names, addresses, spelled-out emails) and the accepted 8+-digit-SKU
+false positive are in `docs/PHASE11.md`.
+
+**Tests (`test/phase11-units.test.ts`):** the exact probe inputs each → `[redacted]`
+with `redacted=true`; a table test over every separator × invisible combination for
+a card and a phone; false-positive guards stay unredacted (`iphone 15 pro max 256gb`,
+`ps5 2024 slim`, `size 10 shoes`, `2 pack`, `iphone 15`); existing redaction tests
+unchanged.
+
+### N3 (NIT — CSV neutralization past leading whitespace)
+
+**Failing input:** a cell whose first **non-whitespace** char is a formula lead was
+not neutralized — `" =1+1"`, `"  @x"` were emitted as-is (some apps trim then
+evaluate).
+
+**New behaviour:** `DANGEROUS_PREFIX` now skips leading whitespace
+(`/^[ \t\r\n]*[=+\-@\t\r]/`), so a formula hidden behind a leading space/tab/CR is
+neutralized with a leading `'`. Existing behaviour and RFC-4180 escaping are
+unchanged; leading space/tab/CR variant tests were added.
+
+### Gates
+
+`typecheck` clean, `build` ok, `worker:build` ok. Full suite **511 passed | 13
+skipped** (up from the Phase 11 baseline of 477 | 13; +34 new tests, 13 skipped
+unchanged, none weakened).
+
 ## Requires Verification
 Web Pixel extension + `write_pixels`/`read_customer_events` (pixel sandbox +
 customer-privacy/consent); purchase/revenue attribution (order data); live App
 Proxy beacon + consent on a real storefront; live theme rendering of the
-emitters. Performance/benchmarks are Phase 14 — not claimed here.
+emitters. Live-Prisma CI confirmation still pending for the Phase 11/11.1 line.
+Performance/benchmarks are Phase 14 — not claimed here.
 
 ## Next step
-Awaiting independent verification + live-Prisma CI confirmation for the Phase 11
-line. Phase 12 is **not** started.
+Awaiting independent verification + live-Prisma CI confirmation. Phase 12 is
+**not** started (no approval).
 
 ## STATUS
-PHASE 11 IMPLEMENTED & PG-VERIFIED (477 passed | 13 skipped). LIVE-PRISMA
-CONFIRMATION PENDING. PHASE 12 NOT STARTED.
+PHASE 11.1 IMPLEMENTED & PG-VERIFIED (511 passed | 13 skipped; Phase 11 baseline
+477 | 13, none weakened). LIVE-PRISMA CONFIRMATION PENDING. PHASE 12 NOT STARTED.

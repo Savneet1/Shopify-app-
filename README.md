@@ -2,7 +2,9 @@
 
 A production-grade, multi-tenant Shopify **Search, Filter & Discovery** app built
 on the current official **Shopify React Router** template, with PostgreSQL as the
-only data/search engine. This repository is at **Phase 11 (Analytics)**.
+only data/search engine. This repository is at **Phase 11.1 (Analytics fix batch:
+SECURITY DEFINER partition-function hardening, evasion-resistant PII redaction,
+CSV neutralization past leading whitespace)**.
 
 > Phase gating is enforced. Implemented so far: Phase 1 (foundation: auth,
 > embedded shell, multi-tenancy + RLS, privacy webhooks, billing), Phase 2/2.1
@@ -41,7 +43,16 @@ only data/search engine. This repository is at **Phase 11 (Analytics)**.
 > last-click attribution, and an admin dashboard with CSV export —
 > **OFF by default; no IP/customer identifiers stored; purchase attribution and
 > Web Pixel are built unwired and need `write_pixels`/`read_customer_events` =
-> Requires Verification**). Later phases to follow. See
+> Requires Verification**), Phase 11.1 (fix batch: the SECURITY DEFINER partition
+> functions no longer trust their caller — `app_drop_analytics_partitions_before`
+> is hard-floored to `now − 395d` so no argument can destroy another tenant's
+> recent data, and `app_ensure_analytics_partition` only accepts months in
+> `[now−14, now+3]`; PII redaction canonicalizes (NFKC + strips invisible/format
+> chars + folds Unicode digits) BEFORE redacting and redacts again post-normalize,
+> so zero-width / full-width / Arabic-Indic obfuscations can no longer slip a
+> card/phone/email past it; CSV formula-injection neutralization now looks past
+> leading whitespace; every SECURITY DEFINER function app_runtime may execute is
+> allowlisted and audited by a test). Later phases to follow. See
 > `docs/PHASE*.md`. Stack unchanged: no Redis, no external search/AI/analytics,
 > PostgreSQL-only; scopes = `read_products` (Phase 11 adds no scope; purchase
 > attribution / Web Pixel / real bundle discounts = Requires Verification).

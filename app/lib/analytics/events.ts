@@ -69,26 +69,69 @@ const ALLOWED_KEYS = new Set<string>([
 ]);
 
 // ---- PII redaction ---------------------------------------------------------
+//
+// N2 (Phase 11.1): redaction must survive normalization-based evasion. An
+// attacker (or an East-Asian IME) can split/obfuscate PII with zero-width or
+// format characters and full-width / non-ASCII decimal digits, so that the RAW
+// text does not match a card/phone/email pattern but the NORMALIZED text (NFKC
+// + punctuation-folding) becomes a clean ASCII digit run. We therefore:
+//   1. CANONICALIZE first (NFKC, strip invisible/format chars, fold every
+//      Unicode decimal digit to ASCII, map full-width @/. to ASCII);
+//   2. redact the canonical text;
+//   3. normalizeQuery;
+//   4. redact AGAIN on the normalized string (digit runs separated by
+//      spaces/dashes only appear after punctuation-folding).
+// Patterns match \p{Nd} (any Unicode decimal digit), so even a digit script we
+// do not fold is still caught as a run. Redaction is idempotent and never throws.
 
-const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
-const URL_RE = /\b(?:https?:\/\/|www\.)[^\s]+/gi;
-// A run of 13–19 digits (card-like), allowing spaces/dashes between groups.
-const CARD_RE = /\b(?:\d[ -]?){13,19}\b/g;
-// A run of 7+ digits (phone-like), allowing spaces/dashes/parens/+.
-const PHONE_RE = /(?:\+?\d[\d ().-]{5,}\d)/g;
-// A long opaque token (>=20 chars of base64-ish) — likely an id/secret.
+// Unicode-aware. After canonicalization, "@"/"." are ASCII; letters may be
+// international (e.g. exämple), domains internationalized.
+const EMAIL_RE = /[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.[\p{L}]{2,}/gu;
+const URL_RE = /\b(?:https?:\/\/|www\.)\S+/giu;
+// A run of 13–19 decimal digits (card-like), allowing spaces/dashes between.
+const CARD_RE = /(?:\p{Nd}[ -]?){13,19}/gu;
+// A run of 7+ decimal digits (phone-like), allowing spaces/dashes/parens/+.
+const PHONE_RE = /\+?\p{Nd}[\p{Nd} ().-]{5,}\p{Nd}/gu;
+// A long opaque token (>=20 chars) — likely an id/secret.
 const TOKEN_RE = /\b[A-Za-z0-9_-]{20,}\b/g;
 
+const INVISIBLE_RE = /[­​-‏⁠﻿]/g;
+const Nd_RE = /\p{Nd}/u;
+// Decimal-digit block "zero" code points, so any \p{Nd} folds to ASCII 0-9 by
+// (code point − block zero). Covers the scripts a storefront realistically sees
+// (NFKC already folds full-width/mathematical digits; these are the rest).
+const DIGIT_ZEROES = [
+  0x30, 0x660, 0x6f0, 0x7c0, 0x966, 0x9e6, 0xa66, 0xae6, 0xb66, 0xbe6, 0xc66,
+  0xce6, 0xd66, 0xe50, 0xed0, 0xf20, 0x1040, 0x17e0, 0x1810, 0xff10,
+];
+function foldDigit(ch: string): string {
+  const cp = ch.codePointAt(0)!;
+  for (const z of DIGIT_ZEROES) if (cp >= z && cp <= z + 9) return String(cp - z);
+  return ch; // untabled script: left as-is, but still caught by \p{Nd} runs
+}
+
+/** Count Unicode decimal digits in a string. */
 function countDigits(s: string): number {
   let n = 0;
-  for (let i = 0; i < s.length; i++) if (s[i] >= "0" && s[i] <= "9") n++;
+  for (const ch of s) if (Nd_RE.test(ch)) n++;
   return n;
 }
 
 /**
- * Redact likely PII from an already-normalized query string. Returns the
- * possibly-redacted text and whether anything was redacted. Order matters:
- * emails and URLs first, then card/phone digit runs, then long tokens.
+ * Canonicalize for PII detection: NFKC, remove invisible/format characters,
+ * fold every Unicode decimal digit to ASCII. (NFKC already maps full-width
+ * "@"/"." and full-width digits to ASCII; the explicit fold covers Arabic-Indic
+ * etc.) Pure, never throws.
+ */
+export function canonicalizeForPII(input: string): string {
+  let s = input.normalize("NFKC").replace(INVISIBLE_RE, "").replace(/\p{Cf}/gu, "");
+  if (Nd_RE.test(s)) s = s.replace(/\p{Nd}/gu, foldDigit);
+  return s;
+}
+
+/**
+ * Redact likely PII. Order: emails, URLs, card runs, phone runs, long tokens.
+ * Idempotent (re-running over "[redacted]" output changes nothing). Never throws.
  */
 export function redactPII(input: string): { text: string; redacted: boolean } {
   let redacted = false;
@@ -109,20 +152,39 @@ export function redactPII(input: string): { text: string; redacted: boolean } {
 }
 
 /**
- * Normalize + length-bound + redact a raw query. Returns null for an
- * absent/empty query (many event types carry no query). Never throws.
+ * Normalize + length-bound + redact a raw query. Canonicalize → redact →
+ * normalizeQuery → redact again (so a run only visible after punctuation-folding
+ * is still caught). Returns null for an absent/empty query. Never throws.
  */
+// normalizeQuery folds "[redacted]" to "redacted" (brackets are not \p{L}\p{N}).
+// To keep a visible, bracketed marker in the stored value, the pass-1 markers are
+// swapped for a normalize-stable sentinel across the normalize step, then
+// restored. The sentinel is letters only (survives normalize unchanged but for
+// case), under 20 chars (not caught by TOKEN_RE), and not a digit run.
+const REDACTION_SENTINEL = "zzredactedzz";
+
 export function cleanQuery(raw: unknown): { queryNorm: string | null; redacted: boolean } {
   if (raw == null) return { queryNorm: null, redacted: false };
   let s = String(raw);
   if (s.length > 4000) s = s.slice(0, 4000); // guard before regex work
-  // Redact on the RAW text first: the normalizer strips the punctuation that
-  // makes emails/URLs/card groupings detectable, so redaction must precede it.
-  const { text, redacted } = redactPII(s);
-  const normalized = normalizeQuery(text);
-  if (normalized.length === 0) return { queryNorm: null, redacted };
-  const bounded = normalized.length > MAX_QUERY_LEN ? normalized.slice(0, MAX_QUERY_LEN) : normalized;
+  const canon = canonicalizeForPII(s);
+  const pass1 = redactPII(canon);
+  // protect pass-1 markers across normalization
+  const protectedText = pass1.text.split("[redacted]").join(REDACTION_SENTINEL);
+  const normalized = normalizeQuery(protectedText);
+  const pass2 = redactPII(normalized); // catch runs only visible after folding
+  // restore protected markers to the bracketed form
+  const restored = pass2.text.split(REDACTION_SENTINEL).join("[redacted]");
+  const redacted = pass1.redacted || pass2.redacted;
+  if (restored.length === 0) return { queryNorm: null, redacted };
+  const bounded = restored.length > MAX_QUERY_LEN ? restored.slice(0, MAX_QUERY_LEN) : restored;
   return { queryNorm: bounded, redacted };
+}
+
+/** Redact a short property string value (canonicalize → redact). Never throws. */
+export function redactValue(input: string): string {
+  const s = input.length > 4000 ? input.slice(0, 4000) : input;
+  return redactPII(canonicalizeForPII(s)).text;
 }
 
 // ---- per-field validation --------------------------------------------------
@@ -141,8 +203,8 @@ function sanitizeProperties(v: unknown): Record<string, string | number | boolea
   for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
     if (keys >= MAX_PROPERTY_KEYS) break;
     if (!/^[A-Za-z0-9_]{1,40}$/.test(k)) continue; // reject odd/nested keys
-    // scalars only — no nested objects/arrays
-    if (typeof val === "string") out[k] = val.length > 120 ? val.slice(0, 120) : val;
+    // scalars only — no nested objects/arrays. String values are PII-redacted.
+    if (typeof val === "string") { const r = redactValue(val); out[k] = r.length > 120 ? r.slice(0, 120) : r; }
     else if (typeof val === "number" && Number.isFinite(val)) out[k] = val;
     else if (typeof val === "boolean") out[k] = val;
     else continue;

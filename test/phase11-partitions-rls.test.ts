@@ -3,55 +3,65 @@ import pg from "pg";
 import { makeDb, type TestDb } from "./helpers/db";
 import { saveAnalyticsSettings } from "~/lib/analytics/settings";
 import { ingestEvents } from "~/lib/analytics/store";
-import { maintainAnalyticsPartitions, listAnalyticsPartitions } from "~/lib/analytics/retention";
+import {
+  maintainAnalyticsPartitions, listAnalyticsPartitions,
+  analyticsMonthTargets, analyticsMonthName,
+} from "~/lib/analytics/retention";
 
 /*
- * Phase 11.8 — partition maintenance (injected clock), RLS on parent AND
- * partitions with cross-shop isolation, and hostile-input robustness.
- * Migration 0013 applied to the test DB.
+ * Phase 11.8 / 11.1 — partition maintenance, RLS on parent AND partitions with
+ * cross-shop isolation, and hostile-input robustness. The hardened DB functions
+ * (migration 0014) anchor their allowed month range and hard-retention floor to
+ * the REAL server clock and cannot be driven to an arbitrary month (that was the
+ * N1 vulnerability), so these engine tests use real-now-relative months; the
+ * pure month arithmetic (Dec→Jan, leap Feb) is asserted clock-independently.
  */
 
-describe("Phase 11 — partition maintenance (injected clock)", () => {
+describe("Phase 11 — partition month targets (pure: Dec→Jan, leap Feb)", () => {
+  it("rolls over the year at Dec→Jan", () => {
+    const names = analyticsMonthTargets(new Date("2026-12-15T00:00:00Z")).map((t) => t.name);
+    expect(names).toEqual(["analytics_event_2026_12", "analytics_event_2027_01", "analytics_event_2027_02"]);
+  });
+  it("names a leap February correctly", () => {
+    expect(analyticsMonthName(new Date("2028-02-29T23:59:59Z"))).toBe("analytics_event_2028_02");
+    const names = analyticsMonthTargets(new Date("2028-01-20T00:00:00Z")).map((t) => t.name);
+    expect(names).toEqual(["analytics_event_2028_01", "analytics_event_2028_02", "analytics_event_2028_03"]);
+  });
+});
+
+describe("Phase 11 — partition maintenance (real clock)", () => {
   let db: TestDb;
   beforeAll(() => { db = makeDb(); });
   afterAll(() => db.close());
 
-  const ensureAround = (iso: string) => maintainAnalyticsPartitions(db.rootExec, { now: new Date(iso) });
-
   it("creates current + next 2 months idempotently; second run is a no-op", async () => {
-    const r1 = await ensureAround("2027-03-10T00:00:00Z");
-    expect(r1.ensured).toEqual(["analytics_event_2027_03", "analytics_event_2027_04", "analytics_event_2027_05"]);
+    const now = new Date();
+    const expected = analyticsMonthTargets(now).map((t) => t.name);
+    const r1 = await maintainAnalyticsPartitions(db.rootExec, { now });
+    expect(r1.ensured).toEqual(expected);
     const before = await listAnalyticsPartitions(db.rootExec);
-    const r2 = await ensureAround("2027-03-10T00:00:00Z");
+    const r2 = await maintainAnalyticsPartitions(db.rootExec, { now });
     const after = await listAnalyticsPartitions(db.rootExec);
     expect(after).toEqual(before); // running twice adds nothing
-    expect(r2.ensured.length).toBe(3);
-  });
-
-  it("handles the Dec -> Jan boundary and a leap-day month", async () => {
-    await ensureAround("2027-12-20T00:00:00Z");
-    let parts = await listAnalyticsPartitions(db.rootExec);
-    expect(parts).toContain("analytics_event_2027_12");
-    expect(parts).toContain("analytics_event_2028_01");
-    expect(parts).toContain("analytics_event_2028_02");
-    // Feb 2028 is a leap month; ensure its range is valid by using it.
-    await ensureAround("2028-02-29T23:59:59Z");
-    parts = await listAnalyticsPartitions(db.rootExec);
-    expect(parts).toContain("analytics_event_2028_02");
-    expect(parts).toContain("analytics_event_2028_03");
+    expect(r2.ensured).toEqual(expected);
   });
 
   it("drops partitions older than the hard retention cap, keeps recent", async () => {
-    // Create a very old month, then run maintenance far in the future.
-    await ensureAround("2025-01-15T00:00:00Z"); // creates 2025_01..03
+    // A genuinely-old partition would long since have been created in the past;
+    // simulate it with an owner-side raw CREATE (the range-guarded ensure() will
+    // not create a month this old), then run maintenance at the real clock.
+    await db.ownerPool.query(
+      `CREATE TABLE IF NOT EXISTS analytics_event_2024_01 PARTITION OF analytics_event
+         FOR VALUES FROM ('2024-01-01') TO ('2024-02-01')`,
+    );
     let parts = await listAnalyticsPartitions(db.rootExec);
-    expect(parts).toContain("analytics_event_2025_01");
-    // Far-future "now" so 2025_01 is well past the 395-day cap.
-    const r = await maintainAnalyticsPartitions(db.rootExec, { now: new Date("2027-06-01T00:00:00Z") });
+    expect(parts).toContain("analytics_event_2024_01");
+    const now = new Date();
+    const r = await maintainAnalyticsPartitions(db.rootExec, { now });
     expect(r.dropped).toBeGreaterThan(0);
     parts = await listAnalyticsPartitions(db.rootExec);
-    expect(parts).not.toContain("analytics_event_2025_01");
-    expect(parts).toContain("analytics_event_2027_06"); // current kept
+    expect(parts).not.toContain("analytics_event_2024_01"); // well past the 395-day floor
+    expect(parts).toContain(analyticsMonthTargets(now)[0].name); // current kept
   });
 });
 

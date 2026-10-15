@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
-  redactPII, cleanQuery, validateEvent, validateBatch, MAX_BATCH, EVENT_TYPES, SURFACES,
+  redactPII, cleanQuery, redactValue, canonicalizeForPII,
+  validateEvent, validateBatch, MAX_BATCH, EVENT_TYPES, SURFACES,
 } from "~/lib/analytics/events";
 import { twoProportionZ, compareArms, variantStats, MIN_TRIALS_PER_ARM, Z_SIGNIFICANT } from "~/lib/analytics/abtest";
 import { attributeAddToCarts, type SessionEvent } from "~/lib/analytics/attribution";
@@ -191,5 +192,138 @@ describe("Phase 11 — unwired customer-events mapping", () => {
   it("mapCustomerEvents filters unmappable", () => {
     const out = mapCustomerEvents([{ name: "search_submitted", data: { query: "a" } }, { name: "checkout_completed" }]);
     expect(out.length).toBe(1);
+  });
+});
+
+/*
+ * Phase 11.1 N2 — redaction must not be evadable by splitting/obfuscating PII
+ * with invisible/format characters and non-ASCII decimal digits. Each probe is
+ * UNREDACTED by the raw-text-only approach but MUST be redacted now, because we
+ * canonicalize (NFKC + strip invisibles + fold digits) BEFORE redacting and
+ * redact a SECOND time after normalization.
+ */
+describe("Phase 11.1 — PII redaction is evasion-resistant (N2)", () => {
+  // Invisible / format code points used to split a run.
+  const ZWSP = "​";   // zero-width space
+  const ZWNJ = "‌";   // zero-width non-joiner (Cf)
+  const SHY = "­";    // soft hyphen
+  const WJ = "⁠";     // word joiner
+  const BOM = "﻿";    // zero-width no-break space
+  // Full-width digits (NFKC-folded) and Arabic-Indic digits (explicitly folded).
+  const fw = (s: string) => s.replace(/[0-9]/g, (d) => String.fromCodePoint(0xff10 + (d.charCodeAt(0) - 48)));
+  const arab = (s: string) => s.replace(/[0-9]/g, (d) => String.fromCodePoint(0x0660 + (d.charCodeAt(0) - 48)));
+
+  // The exact probe inputs for N2. Each should → "[redacted]" with redacted=true.
+  const cardProbes: Array<[string, string]> = [
+    ["zero-width-split card", `4111${ZWSP}1111${ZWSP}1111${ZWSP}1111`],
+    ["soft-hyphen-split card", `4111${SHY}1111${SHY}1111${SHY}1111`],
+    ["full-width card w/ separators", fw("4111") + " " + fw("1111") + " " + fw("1111") + " " + fw("1111")],
+    ["full-width card contiguous", fw("4111111111111111")],
+  ];
+  const phoneProbes: Array<[string, string]> = [
+    ["full-width phone", fw("4155551234")],
+    ["zero-width-split phone", `415${ZWNJ}555${ZWNJ}1234`],
+    ["arabic-indic phone", arab("4155551234")],
+    ["word-joiner-split phone", `9876${WJ}543210`],
+  ];
+  const emailProbes: Array<[string, string]> = [
+    ["full-width @ email", "john.doe" + "＠" + "example.com"],
+    ["zero-width-in email", `john.doe@ex${ZWSP}ample.com`],
+    ["IDN email", "josé@exämple.com"],
+    ["BOM-wrapped email", `${BOM}john@example.com${BOM}`],
+  ];
+
+  for (const [label, input] of [...cardProbes, ...phoneProbes, ...emailProbes]) {
+    it(`cleanQuery redacts: ${label}`, () => {
+      const r = cleanQuery(input);
+      expect(r.redacted).toBe(true);
+      expect(r.queryNorm).toBe("[redacted]");
+    });
+  }
+
+  it("the same obfuscations are redacted inside property string values", () => {
+    for (const [, input] of [...cardProbes, ...phoneProbes, ...emailProbes]) {
+      expect(redactValue(input)).toContain("[redacted]");
+    }
+  });
+
+  it("canonicalizeForPII strips invisibles and folds digits to ASCII", () => {
+    expect(canonicalizeForPII(`41${ZWSP}11`)).toBe("4111");
+    expect(canonicalizeForPII(fw("2024"))).toBe("2024");
+    expect(canonicalizeForPII(arab("2024"))).toBe("2024");
+  });
+
+  // False-positive guards: real product queries must stay UNREDACTED.
+  const guards = [
+    "iphone 15 pro max 256gb",
+    "ps5 2024 slim",
+    "size 10 shoes",
+    "2 pack",
+    "iphone 15",
+  ];
+  for (const q of guards) {
+    it(`does not over-redact a real query: "${q}"`, () => {
+      const r = cleanQuery(q);
+      expect(r.redacted).toBe(false);
+      expect(r.queryNorm).not.toContain("[redacted]");
+    });
+  }
+
+  // Table test: a card and a phone across every separator × invisible combo.
+  it("table: card/phone survive no separator/invisible combination", () => {
+    const seps = ["", " ", "-", ZWSP, ZWNJ, SHY, WJ, BOM];
+    for (const sep of seps) {
+      const card = `4111${sep}1111${sep}1111${sep}1111`;
+      const phone = `415${sep}555${sep}1234`;
+      expect(cleanQuery(card).redacted).toBe(true);
+      expect(cleanQuery(phone).redacted).toBe(true);
+    }
+  });
+
+  it("redaction is idempotent and never throws on adversarial input", () => {
+    const once = cleanQuery("card 4111 1111 1111 1111").queryNorm!;
+    expect(cleanQuery(once).queryNorm).toBe(once);
+    expect(() => cleanQuery("\u0000".repeat(50) + fw("4111111111111111"))).not.toThrow();
+    expect(() => redactValue("x".repeat(9000))).not.toThrow();
+  });
+
+  it("DOCUMENTED non-detections: names/addresses and spelled-out emails are NOT caught", () => {
+    // These are accepted limitations (documented in docs/PHASE11.md).
+    expect(cleanQuery("john smith").redacted).toBe(false);
+    expect(cleanQuery("123 main street").redacted).toBe(false);
+    expect(cleanQuery("john at example dot com").redacted).toBe(false);
+    // ...and a long bare digit run (8+) IS redacted — an accepted false positive
+    // (e.g. a long SKU) we prefer over leaking a phone/account number.
+    expect(cleanQuery("12345678").redacted).toBe(true);
+  });
+});
+
+/*
+ * Phase 11.1 N3 — CSV neutralization must look past LEADING WHITESPACE: a cell
+ * whose first NON-whitespace char is = + - @ (or TAB/CR) is still neutralized,
+ * because spreadsheet apps trim then evaluate.
+ */
+describe("Phase 11.1 — CSV neutralizes past leading whitespace (N3)", () => {
+  it("neutralizes a formula hidden behind a leading space/tab/CR", () => {
+    expect(csvCell(" =1+1")).toBe("'" + " =1+1");       // leading space
+    expect(csvCell("  @x")).toBe("'" + "  @x");           // leading spaces
+    expect(csvCell("\t=cmd")).toBe("'\t=cmd");             // leading TAB: neutralized; TAB is not an RFC-quote char
+    expect(csvCell("\r=cmd")).toBe('"\'\r=cmd"');          // leading CR (CR is an RFC quote char)
+  });
+  it("leading-tab plain text (no formula lead) is neutralized because TAB itself is dangerous", () => {
+    // "\tx": first non-ws char is 'x', but the leading char is a TAB, which the
+    // prefix set still treats as dangerous — matches existing csvCell("\\tx").
+    expect(csvCell("\tx")).toBe("'\tx");
+  });
+  it("still neutralizes the plain leading cases (unchanged behaviour)", () => {
+    expect(csvCell("=1+2")).toBe("'=1+2");
+    expect(csvCell("+cmd")).toBe("'+cmd");
+    expect(csvCell("-2")).toBe("'-2");
+    expect(csvCell("@ref")).toBe("'@ref");
+  });
+  it("does NOT neutralize an ordinary value that merely contains = later", () => {
+    expect(csvCell("a=b")).toBe("a=b");
+    expect(csvCell("size: 10")).toBe("size: 10");
+    expect(csvCell("  hello")).toBe("  hello");
   });
 });

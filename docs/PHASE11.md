@@ -179,6 +179,73 @@ including hostile query text.
   for revenue, order data / `read_orders`), all **Requires Verification** and
   unapproved. The mapping module is present but unwired.
 
+## Phase 11.1 — hardening (migration 0014)
+
+Phase 11.1 is a security/privacy fix batch over Phase 11. Migration 0013 is **not**
+modified; the fixes ship as the additive, idempotent `0014_phase11_1_definer_hardening`
+(`CREATE OR REPLACE` only — no table or data change), so an already-migrated database
+picks them up on deploy.
+
+### SECURITY DEFINER audit
+
+A `SECURITY DEFINER` function runs with the **owner's** privileges and bypasses RLS
+for whatever it does internally, so every definer function that `app_runtime` (the
+NOSUPERUSER / NOBYPASSRLS role every request handler and the worker run as) may
+`EXECUTE` is a potential cross-tenant hole. The table below is the **complete** set
+`app_runtime` can execute; a test (`test/phase11_1-definer.test.ts`) enumerates the
+catalog and fails if any definer function executable by `app_runtime` is missing
+from this allowlist, forcing this audit to stay current.
+
+| Function | Definer action | Cross-tenant read / write / delete surface | Why it is safe |
+| --- | --- | --- | --- |
+| `app_resolve_shop(text)` | Upserts a `shop` row for a domain, returns its id | Writes one `shop` row; returns only that shop's opaque UUID | Domain→id bootstrap is the intended behaviour; reads/returns no tenant business data and no other shop's row |
+| `app_shops_needing_full_sync()` | Reads `shop` sync metadata | Returns a list of shop UUIDs + sync flags (no per-tenant catalog/analytics rows) | Worker scheduling metadata only; opaque ids, no tenant data crosses a boundary |
+| `app_list_analytics_partitions()` | Reads `pg_catalog` | Returns partition **names** (catalog metadata) | Names only; no row in any partition is read |
+| `app_analytics_hard_retention_days()` | Returns the integer `395` | None | Pure IMMUTABLE constant |
+| `app_ensure_analytics_partition(timestamptz)` | **DDL** — creates a monthly partition | Creates a partition (+ forces RLS, adds the tenant policy, grants nothing) | **Range-bounded to `[now−14, now+3]` months** (else raises `22023` and creates nothing); creates an RLS-FORCED, un-granted partition reachable only via the parent — never reads or destroys data |
+| `app_drop_analytics_partitions_before(timestamptz)` | **DDL** — drops whole monthly partitions (destructive) | Drops partitions, destroying all shops' rows in them | **Hard-floored**: effective cutoff = `LEAST(requested, date_trunc('month', nowUTC − 395d))`, computed from the real server clock — so no argument, in any tenant context, can drop a partition that could hold data newer than the 395-day cap. The current partition and recent data always survive |
+
+The two DDL functions were the N1 vulnerability: as shipped in 0013 they trusted
+their `timestamptz` argument, so `app_runtime` could call
+`app_drop_analytics_partitions_before('2100-01-01')` and drop **every** partition
+for **every** shop (cross-tenant data destruction), or create unbounded far-future
+partitions. 0014 enforces both bounds **inside** the functions (defence in depth —
+the app never passes a hostile value, but callers are not trusted). The guard is
+mutation-tested: removing the clamp makes the exploit-defeat test wipe both shops'
+data and fail; restoring it passes.
+
+### PII redaction — what is and is NOT detected (N2)
+
+Redaction now **canonicalizes before redacting** (NFKC, strip invisible/format
+characters = `Cf` + `U+00AD/200B–200F/2060/FEFF`, fold every `\p{Nd}` to ASCII, map
+full-width `@`/`.` to ASCII) and redacts **again after** `normalizeQuery`, so a run
+only visible after punctuation-folding is still caught. String values in event
+`properties` get the same treatment via `redactValue`.
+
+- **Detected (redacted to `[redacted]`):** emails (Unicode/IDN local + domain,
+  full-width `@`, zero-width-split), URLs (`http(s)://`, `www.`), card-like runs
+  (13–19 digits) and phone-like runs (7+ digits) **however separated** — spaces,
+  dashes, parens, zero-width/soft-hyphen/word-joiner/BOM, and full-width or
+  Arabic-Indic (and other scripts') digits; long opaque tokens (≥20 chars).
+- **NOT detected (accepted limitations):** personal **names** ("john smith"),
+  **postal addresses** ("123 main street"), and **spelled-out** contact info
+  ("john at example dot com") — these are not pattern-detectable without heavy NLP
+  and are out of scope.
+- **Accepted false positive:** a bare digit run of 8+ digits (e.g. a long SKU) is
+  redacted. We prefer occasionally redacting a long SKU over ever leaking a phone
+  or account number. Short product tokens stay intact ("iphone 15 pro max 256gb",
+  "ps5 2024 slim", "size 10 shoes", "2 pack", "iphone 15" are **not** redacted).
+
+Redaction is idempotent, bounded (input pre-truncated to 4000 chars), and never throws.
+
+### Retention-constant single source of truth
+
+The hard partition-retention cap lives once in SQL as
+`app_analytics_hard_retention_days()` (= `395`). The app constant
+`PARTITION_RETENTION_DAYS` (`app/lib/analytics/settings.ts`) must equal it; a test
+reads both and asserts they agree, so the DB floor and the maintenance-tick cutoff
+can never silently drift apart.
+
 ## Requires Verification
 Web Pixel extension + `write_pixels`/`read_customer_events` (pixel sandbox +
 customer-privacy/consent behaviour); purchase/revenue attribution (order data);

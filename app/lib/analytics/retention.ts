@@ -72,21 +72,42 @@ export interface PartitionMaintenanceResult {
   dropped: number;
 }
 
+/** Partition name for a date's UTC month — the SAME `YYYY_MM` the SQL function
+ * derives via to_char(date_trunc('month', ts), 'YYYY_MM'). Pure. */
+export function analyticsMonthName(d: Date): string {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  return `analytics_event_${y}_${m}`;
+}
+
+/** The month targets (date + partition name) to ensure for a given `now`.
+ * Default offsets = current + next 2 months. Pure; handles Dec→Jan year
+ * rollover and leap Februaries via UTC Date arithmetic. */
+export function analyticsMonthTargets(
+  now: Date, offsets: number[] = [0, 1, 2],
+): { date: Date; name: string }[] {
+  return offsets.map((k) => {
+    const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + k, 1, 12, 0, 0));
+    return { date, name: analyticsMonthName(date) };
+  });
+}
+
 /**
  * Global partition maintenance (owner-owned definer functions; runs on the
  * root/owner path of the tick, NOT per shop). Ensures the current + next 2
- * months exist and drops partitions entirely older than the hard cap.
+ * months exist and drops partitions entirely older than the hard cap. The DB
+ * `app_ensure_analytics_partition` only accepts months within its real-clock
+ * range [now-14, now+3], so `now` must be the (real) server clock in production.
  */
 export async function maintainAnalyticsPartitions(
   rootExec: Exec, opts: { now?: Date } = {},
 ): Promise<PartitionMaintenanceResult> {
   const now = opts.now ?? new Date();
   const ensured: string[] = [];
-  for (const addMonths of [0, 1, 2]) {
-    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + addMonths, 1, 12, 0, 0));
+  for (const { date } of analyticsMonthTargets(now)) {
     const rows = await rootExec.rows<{ app_ensure_analytics_partition: string }>(
       `SELECT app_ensure_analytics_partition($1::timestamptz)`,
-      [d.toISOString()],
+      [date.toISOString()],
     );
     if (rows[0]) ensured.push(rows[0].app_ensure_analytics_partition);
   }

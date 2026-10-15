@@ -5,12 +5,16 @@
  * newlines are escaped per RFC 4180. Pure, deterministic, no throw.
  */
 
-const DANGEROUS_PREFIX = /^[=+\-@\t\r]/;
+// A cell is dangerous if its FIRST NON-WHITESPACE character is one a spreadsheet
+// treats as a formula lead (= + - @) or a TAB/CR. Checking past leading
+// whitespace closes the " =1+1" / "\t@x" bypass (some apps trim then evaluate).
+const DANGEROUS_PREFIX = /^[ \t\r\n]*[=+\-@\t\r]/;
 
 /** Neutralize + escape ONE cell value to a safe CSV field. */
 export function csvCell(value: unknown): string {
   let s = value == null ? "" : String(value);
-  // Neutralize formula-injection: prefix a single quote if it starts dangerous.
+  // Neutralize formula-injection: prefix a single quote if it starts dangerous
+  // (at the first non-whitespace character).
   if (DANGEROUS_PREFIX.test(s)) s = "'" + s;
   // RFC 4180 quoting: wrap in quotes and double internal quotes if the field
   // contains a comma, quote, CR or LF.
