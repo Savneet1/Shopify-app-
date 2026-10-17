@@ -1,0 +1,85 @@
+{%- comment -%}
+  Phase 12.5 APP BLOCK — merchant-defined countdown timer (DISPLAY ONLY; no
+  price or checkout effect). target = section. On a product page it passes the
+  product ref so product/collection-scoped rules can match; global rules apply
+  anywhere. The server returns the end time AND a server "now" so the client
+  corrects for clock skew. textContent-only rendering (never innerHTML); bounded
+  update interval; respects prefers-reduced-motion; announces only coarse
+  changes to assistive tech; shows nothing before the window opens and, after
+  expiry, the merchant's expired message or nothing; silent no-op on failure.
+{%- endcomment -%}
+
+{%- liquid
+  assign prefix = block.settings.proxy_prefix | default: 'apps'
+  assign subpath = block.settings.proxy_subpath | default: 'search'
+  assign product_ref = ''
+  if product
+    assign product_ref = product.id | prepend: 'gid://shopify/Product/'
+  endif
+-%}
+
+<div class="boost-countdown" id="boost-countdown-{{ block.id }}" data-boost-countdown hidden>
+  {%- if block.settings.countdown_heading != blank -%}
+    <span class="boost-countdown__heading">{{ block.settings.countdown_heading | escape }}</span>
+  {%- endif -%}
+  <span class="boost-countdown__label" data-boost-countdown-label></span>
+  <span class="boost-countdown__clock" data-boost-countdown-clock aria-hidden="true"></span>
+  <span class="boost-countdown__sr" data-boost-countdown-sr role="status" aria-live="polite"></span>
+</div>
+
+<script type="application/json" id="boost-countdown-config-{{ block.id }}">
+  {
+    "rootId": {{ 'boost-countdown-' | append: block.id | json }},
+    "proxyBase": {{ '/' | append: prefix | append: '/' | append: subpath | json }},
+    "productRef": {{ product_ref | json }},
+    "timeoutMs": {{ block.settings.timeout_ms | default: 2000 | json }},
+    "labels": {
+      "endsIn": {{ 'boost.countdown.ends_in' | t | json }},
+      "d": {{ 'boost.countdown.days' | t | json }},
+      "h": {{ 'boost.countdown.hours' | t | json }},
+      "m": {{ 'boost.countdown.minutes' | t | json }},
+      "s": {{ 'boost.countdown.seconds' | t | json }},
+      "ended": {{ 'boost.countdown.ended' | t | json }}
+    }
+  }
+</script>
+
+<link rel="stylesheet" href="{{ 'boost.css' | asset_url }}">
+<script src="{{ 'boost-core.js' | asset_url }}" defer></script>
+<script src="{{ 'boost-countdown.js' | asset_url }}" defer></script>
+
+{% schema %}
+{
+  "name": "Countdown timer",
+  "target": "section",
+  "settings": [
+    {
+      "type": "text",
+      "id": "countdown_heading",
+      "label": "t:boost.settings.countdown_heading.label"
+    },
+    {
+      "type": "text",
+      "id": "proxy_prefix",
+      "label": "t:boost.settings.proxy_prefix.label",
+      "default": "apps"
+    },
+    {
+      "type": "text",
+      "id": "proxy_subpath",
+      "label": "t:boost.settings.proxy_subpath.label",
+      "default": "search"
+    },
+    {
+      "type": "range",
+      "id": "timeout_ms",
+      "label": "t:boost.settings.timeout_ms.label",
+      "min": 500,
+      "max": 5000,
+      "step": 250,
+      "unit": "ms",
+      "default": 2000
+    }
+  ]
+}
+{% endschema %}

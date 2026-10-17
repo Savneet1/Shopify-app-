@@ -1,0 +1,74 @@
+{%- comment -%}
+  Phase 12.4 APP BLOCK — pre-order messaging (DISPLAY ONLY). target = section,
+  for the PRODUCT template. Fetches the applicable pre-order rule for THIS
+  product from the signed App Proxy and shows a "Pre-order / ships on <date>"
+  badge + note. textContent-only (never innerHTML); shows nothing when no rule
+  matches; silent no-op on failure. This NEVER makes an out-of-stock product
+  purchasable — that is configured by the merchant in Shopify (continue selling
+  / selling plans) = Requires Verification.
+{%- endcomment -%}
+
+{%- liquid
+  assign prefix = block.settings.proxy_prefix | default: 'apps'
+  assign subpath = block.settings.proxy_subpath | default: 'search'
+  assign product_ref = ''
+  if product
+    assign product_ref = product.id | prepend: 'gid://shopify/Product/'
+  endif
+-%}
+
+{%- if product -%}
+<div class="boost-preorder" id="boost-preorder-{{ block.id }}" data-boost-preorder hidden>
+  <span class="boost-preorder__badge" data-boost-preorder-badge></span>
+  <span class="boost-preorder__note" data-boost-preorder-note></span>
+</div>
+
+<script type="application/json" id="boost-preorder-config-{{ block.id }}">
+  {
+    "rootId": {{ 'boost-preorder-' | append: block.id | json }},
+    "proxyBase": {{ '/' | append: prefix | append: '/' | append: subpath | json }},
+    "productRef": {{ product_ref | json }},
+    "locale": {{ request.locale.iso_code | default: 'en' | json }},
+    "timeoutMs": {{ block.settings.timeout_ms | default: 2000 | json }},
+    "labels": {
+      "badge": {{ 'boost.preorder.badge' | t | json }},
+      "shipsOn": {{ 'boost.preorder.ships_on' | t | json }}
+    }
+  }
+</script>
+
+<link rel="stylesheet" href="{{ 'boost.css' | asset_url }}">
+<script src="{{ 'boost-core.js' | asset_url }}" defer></script>
+<script src="{{ 'boost-preorder.js' | asset_url }}" defer></script>
+{%- endif -%}
+
+{% schema %}
+{
+  "name": "Pre-order message",
+  "target": "section",
+  "settings": [
+    {
+      "type": "text",
+      "id": "proxy_prefix",
+      "label": "t:boost.settings.proxy_prefix.label",
+      "default": "apps"
+    },
+    {
+      "type": "text",
+      "id": "proxy_subpath",
+      "label": "t:boost.settings.proxy_subpath.label",
+      "default": "search"
+    },
+    {
+      "type": "range",
+      "id": "timeout_ms",
+      "label": "t:boost.settings.timeout_ms.label",
+      "min": 500,
+      "max": 5000,
+      "step": 250,
+      "unit": "ms",
+      "default": 2000
+    }
+  ]
+}
+{% endschema %}

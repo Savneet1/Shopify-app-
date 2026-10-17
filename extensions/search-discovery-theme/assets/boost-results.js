@@ -346,6 +346,11 @@
           a.appendChild(img);
         }
         a.appendChild(el("span", "boost-card__title", p.title || ""));
+        // Phase 12.4: additive pre-order badge (textContent; only when the card
+        // payload carries a matched rule — byte-identical otherwise).
+        if (p.preorder && p.preorder.preorder === true) {
+          a.appendChild(el("span", "boost-card__preorder", String(p.preorder.message || "Pre-order")));
+        }
         var meta = el("span", "boost-card__meta");
         if (p.vendor) meta.appendChild(el("span", "boost-card__vendor", p.vendor));
         var pr = money(p);

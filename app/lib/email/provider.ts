@@ -12,6 +12,11 @@ export interface EmailMessage {
   text: string;
   html?: string;
   from?: string;
+  fromName?: string;
+  replyTo?: string;
+  /** Extra headers (e.g. List-Unsubscribe / List-Unsubscribe-Post). Values are
+   * strictly validated (no CR/LF) by the provider before use. */
+  headers?: Record<string, string>;
 }
 
 export interface EmailSendResult {

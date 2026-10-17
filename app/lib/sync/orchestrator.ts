@@ -38,6 +38,7 @@ import {
   updateSyncRunStats,
   isAlreadyRunning,
 } from "~/lib/sync/store";
+import { detectAndQueueRestock } from "~/lib/restock/detect";
 
 export type ShopRunner = <T>(shopId: string, fn: (exec: Exec) => Promise<T>) => Promise<T>;
 
@@ -225,6 +226,10 @@ export async function applyProductUpsert(
       }
     }
     await refreshDocInActiveVersion(e, shopId, id);
+    // Phase 12.3: detect an unavailable->available transition and create pending
+    // back-in-stock notifications, atomically with the doc refresh. No-op (one
+    // existence SELECT) for products no one is subscribed to.
+    await detectAndQueueRestock(e, shopId, id);
   });
 }
 

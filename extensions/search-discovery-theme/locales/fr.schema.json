@@ -75,6 +75,15 @@
       "analytics": {
         "label": "Collecter des statistiques de recherche",
         "info": "Envoie des événements de recherche agrégés et respectueux de la vie privée vers vos statistiques admin. Désactivé par défaut; un identifiant de session n'est utilisé qu'avec le consentement analytique."
+      },
+      "notify_heading": {
+        "label": "Titre"
+      },
+      "notify_button": {
+        "label": "Libellé du bouton"
+      },
+      "countdown_heading": {
+        "label": "Titre du compte à rebours (facultatif)"
       }
     }
   }

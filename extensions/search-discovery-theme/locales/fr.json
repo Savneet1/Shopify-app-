@@ -42,6 +42,31 @@
       "unavailable": "Ce lot est actuellement indisponible.",
       "quantity": "Quantité",
       "variant": "Variante"
+    },
+    "notify": {
+      "heading": "Prévenez-moi quand c'est disponible",
+      "description": "Saisissez votre e-mail et nous vous préviendrons lorsque cet article sera de nouveau en stock.",
+      "email_label": "Adresse e-mail",
+      "email_placeholder": "vous@exemple.com",
+      "consent": "Prévenez-moi une fois lorsque cet article sera de nouveau en stock. Je peux me désabonner à tout moment.",
+      "button": "Prévenez-moi",
+      "sending": "Envoi…",
+      "success": "Merci ! Si cet article revient, nous vous enverrons un e-mail. Veuillez vérifier votre boîte de réception pour confirmer.",
+      "error": "Désolé, nous n'avons pas pu enregistrer cela pour le moment. Veuillez réessayer plus tard.",
+      "invalid_email": "Veuillez saisir une adresse e-mail valide.",
+      "need_consent": "Veuillez cocher la case pour recevoir une alerte unique."
+    },
+    "countdown": {
+      "ends_in": "Se termine dans",
+      "days": "j",
+      "hours": "h",
+      "minutes": "min",
+      "seconds": "s",
+      "ended": "Cette offre est terminée."
+    },
+    "preorder": {
+      "badge": "Précommande",
+      "ships_on": "Expédié le"
     }
   }
 }

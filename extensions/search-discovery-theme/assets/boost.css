@@ -152,3 +152,22 @@ a.boost-recs__card:focus-visible { outline: 2px solid var(--boost-focus, #1a56db
 @media (max-width: 749px) {
   .boost-bundle__item { flex-wrap: wrap; }
 }
+
+/* Phase 12 — back-in-stock, countdown, pre-order (display only). */
+.boost-notify { margin: 1rem 0; padding: 1rem; border: 1px solid #e3e3e3; border-radius: 8px; }
+.boost-notify__heading { font-size: 1.05rem; margin: 0 0 .25rem; }
+.boost-notify__desc { color: #555; font-size: .9rem; margin: 0 0 .75rem; }
+.boost-notify__form { display: grid; gap: .5rem; max-width: 28rem; }
+.boost-notify__email { padding: .5rem; border: 1px solid #c9c9c9; border-radius: 6px; font: inherit; }
+.boost-notify__consent { display: flex; gap: .5rem; align-items: flex-start; font-size: .85rem; color: #444; }
+.boost-notify__btn { padding: .5rem .9rem; border: 0; border-radius: 6px; background: #1a1a1a; color: #fff; cursor: pointer; justify-self: start; }
+.boost-notify__btn:disabled { opacity: .6; cursor: default; }
+.boost-notify__status { font-size: .85rem; color: #333; min-height: 1.2em; margin: .25rem 0 0; }
+.boost-countdown { display: inline-flex; gap: .4rem; align-items: baseline; padding: .4rem .6rem; border-radius: 6px; background: #f6f6f6; font-variant-numeric: tabular-nums; }
+.boost-countdown__heading, .boost-countdown__label { font-weight: 600; }
+.boost-countdown__clock { font-variant-numeric: tabular-nums; }
+.boost-countdown__sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.boost-preorder { display: inline-flex; gap: .5rem; align-items: center; margin: .5rem 0; }
+.boost-preorder__badge, .boost-card__preorder, .boost-recs__preorder, .boost-bundle__preorder {
+  display: inline-block; padding: .1rem .45rem; border-radius: 4px; background: #eef2ff; color: #3538cd; font-size: .75rem; font-weight: 600; }
+.boost-preorder__note { color: #555; font-size: .85rem; }

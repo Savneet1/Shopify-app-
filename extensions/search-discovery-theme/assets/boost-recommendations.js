@@ -110,6 +110,11 @@
       card.appendChild(img);
     }
     card.appendChild(el("div", "boost-recs__title", p.title || ""));
+    // Phase 12.4: additive pre-order badge (textContent; only when the card
+    // payload carries a matched rule — byte-identical otherwise).
+    if (p.preorder && p.preorder.preorder === true) {
+      card.appendChild(el("div", "boost-recs__preorder", String(p.preorder.message || "Pre-order")));
+    }
     if (cfg.showVendor && p.vendor) card.appendChild(el("div", "boost-recs__vendor", p.vendor));
     if (cfg.showPrice) {
       var price = Core.formatPrice(p.priceMin, p.priceMax, cfg.currency);

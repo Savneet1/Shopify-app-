@@ -75,6 +75,15 @@
       "analytics": {
         "label": "Collect search analytics",
         "info": "Send privacy-preserving, aggregate search events to your admin Analytics. Off by default; a session id is used only with analytics consent."
+      },
+      "notify_heading": {
+        "label": "Heading"
+      },
+      "notify_button": {
+        "label": "Button label"
+      },
+      "countdown_heading": {
+        "label": "Countdown heading (optional)"
       }
     }
   }

@@ -123,6 +123,11 @@
       var href = Core.toSameSitePath(item.product.url, cfg.allowedHosts, currentHost());
       if (href) { var a = el("a", "boost-bundle__title", item.product.title || ""); a.setAttribute("href", href); info.appendChild(a); }
       else info.appendChild(el("div", "boost-bundle__title", item.product.title || ""));
+      // Phase 12.4: additive pre-order badge (textContent; only when the card
+      // payload carries a matched rule — byte-identical otherwise).
+      if (item.product.preorder && item.product.preorder.preorder === true) {
+        info.appendChild(el("div", "boost-bundle__preorder", String(item.product.preorder.message || "Pre-order")));
+      }
       if (cfg.showVendor && item.product.vendor) info.appendChild(el("div", "boost-bundle__vendor", item.product.vendor));
       info.appendChild(el("div", "boost-bundle__qty", "×" + item.quantity));
 

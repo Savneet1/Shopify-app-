@@ -42,6 +42,31 @@
       "unavailable": "This bundle is currently unavailable.",
       "quantity": "Quantity",
       "variant": "Variant"
+    },
+    "notify": {
+      "heading": "Notify me when available",
+      "description": "Enter your email and we'll let you know when this item is back in stock.",
+      "email_label": "Email address",
+      "email_placeholder": "you@example.com",
+      "consent": "Email me once when this item is back in stock. I can unsubscribe at any time.",
+      "button": "Notify me",
+      "sending": "Sending…",
+      "success": "Thanks! If this item returns, we'll email you. Please check your inbox to confirm.",
+      "error": "Sorry, we couldn't register that right now. Please try again later.",
+      "invalid_email": "Please enter a valid email address.",
+      "need_consent": "Please tick the box to receive a one-time alert."
+    },
+    "countdown": {
+      "ends_in": "Ends in",
+      "days": "d",
+      "hours": "h",
+      "minutes": "m",
+      "seconds": "s",
+      "ended": "This offer has ended."
+    },
+    "preorder": {
+      "badge": "Pre-order",
+      "ships_on": "Ships on"
     }
   }
 }

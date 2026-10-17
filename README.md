@@ -2,9 +2,8 @@
 
 A production-grade, multi-tenant Shopify **Search, Filter & Discovery** app built
 on the current official **Shopify React Router** template, with PostgreSQL as the
-only data/search engine. This repository is at **Phase 11.1 (Analytics fix batch:
-SECURITY DEFINER partition-function hardening, evasion-resistant PII redaction,
-CSV neutralization past leading whitespace)**.
+only data/search engine. This repository is at **Phase 12 (Back-in-stock,
+pre-order messaging, countdown timers, email delivery)**.
 
 > Phase gating is enforced. Implemented so far: Phase 1 (foundation: auth,
 > embedded shell, multi-tenancy + RLS, privacy webhooks, billing), Phase 2/2.1
@@ -52,8 +51,24 @@ CSV neutralization past leading whitespace)**.
 > so zero-width / full-width / Arabic-Indic obfuscations can no longer slip a
 > card/phone/email past it; CSV formula-injection neutralization now looks past
 > leading whitespace; every SECURITY DEFINER function app_runtime may execute is
-> allowlisted and audited by a test). Later phases to follow. See
-> `docs/PHASE*.md`. Stack unchanged: no Redis, no external search/AI/analytics,
+> allowlisted and audited by a test), Phase 12 (back-in-stock + pre-order +
+> countdown + email: a provider-agnostic **SMTP email provider built on Node
+> built-ins only** — no new dependency — with STARTTLS/implicit TLS, AUTH
+> PLAIN/LOGIN, strict header-injection protection, RFC 2047 subjects, one-click
+> List-Unsubscribe, bounded retries and typed permanent/transient errors; per-shop
+> SMTP credentials **AES-256-GCM encrypted at rest** (NoopProvider default when
+> not configured); back-in-stock subscriptions with **double opt-in**, keyed
+> email hashing, dedupe, per-email/per-shop caps, a suppression list, and
+> restock detection from already-synced `read_products` data (idempotent per
+> availability-epoch, re-checked at send time); pre-order **messaging only**
+> (badge/note on the product block + search/recommendation/bundle cards, additive
+> payload, byte-identical with no rules) and **display-only** countdown timers
+> (server-clock skew correction, reduced-motion, coarse aria); a `/app/restock`
+> admin; and mandatory GDPR/retention — **no new Shopify scope; the app does NOT
+> make an out-of-stock product purchasable (selling plans / continue-selling are
+> the merchant's Shopify config), and real mail deliverability (SPF/DKIM/DMARC) +
+> live beacon/theme rendering = Requires Verification**). Later phases to follow.
+> See `docs/PHASE*.md`. Stack unchanged: no Redis, no external search/AI/analytics,
 > PostgreSQL-only; scopes = `read_products` (Phase 11 adds no scope; purchase
 > attribution / Web Pixel / real bundle discounts = Requires Verification).
 

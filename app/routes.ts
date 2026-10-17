@@ -32,6 +32,9 @@ export default [
     // Phase 11: analytics dashboard + CSV export.
     route("analytics", "routes/app.analytics.tsx"),
     route("analytics/export", "routes/app.analytics.export.tsx"),
+    // Phase 12: back-in-stock + email + pre-order + countdown admin.
+    route("restock", "routes/app.restock.tsx"),
+    route("restock/export", "routes/app.restock.export.tsx"),
   ]),
 
   // App Proxy storefront endpoints (Phase 3). Shopify proxies
@@ -50,6 +53,14 @@ export default [
   route("proxy/bundle-event", "routes/proxy.bundle-event.tsx"),
   // Phase 11: analytics ingestion beacon.
   route("proxy/analytics-event", "routes/proxy.analytics-event.tsx"),
+  // Phase 12: back-in-stock capture + countdown + pre-order data (App Proxy).
+  route("proxy/back-in-stock", "routes/proxy.back-in-stock.tsx"),
+  route("proxy/countdown", "routes/proxy.countdown.tsx"),
+  route("proxy/preorder", "routes/proxy.preorder.tsx"),
+
+  // Phase 12: public double-opt-in confirm + unsubscribe (no login; from email).
+  route("restock/confirm", "routes/restock.confirm.tsx"),
+  route("restock/unsubscribe", "routes/restock.unsubscribe.tsx"),
 
   // Webhooks.
   route("webhooks/app/uninstalled", "routes/webhooks.app.uninstalled.tsx"),

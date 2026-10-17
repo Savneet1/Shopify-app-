@@ -2,6 +2,7 @@ import type { LoaderFunctionArgs } from "react-router";
 import { handleProxy } from "~/lib/search/proxy.server";
 import { withShopExec } from "~/lib/tenant.server";
 import { getRecommendations, normalizeRecType } from "~/lib/recommend/engine";
+import { attachPreorder } from "~/lib/preorder/annotate.server";
 
 /**
  * Phase 9.5 — storefront recommendations endpoint (App Proxy).
@@ -20,15 +21,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) =>
     const sp = url.searchParams;
     const type = normalizeRecType(sp.get("type")) ?? "trending";
     const ranking = sp.get("ranking") === "lift" ? "lift" : "confidence";
-    const res = await withShopExec(shopId, (e) =>
-      getRecommendations(e, shopId, {
+    const res = await withShopExec(shopId, async (e) => {
+      const r = await getRecommendations(e, shopId, {
         type,
         seed: sp.get("seed"),
         recent: sp.get("recent"),
         limit: numParam(sp.get("limit")),
         fbtRanking: ranking,
-      }),
-    );
+      });
+      // Phase 12.4: additively attach pre-order badges (no-op without rules).
+      await attachPreorder(e, shopId, r.products as Array<{ id: string }>, new Date());
+      return r;
+    });
     // Shape mirrors proxy/products cards; `fallback` absent means "rendered".
     return {
       type: res.type,

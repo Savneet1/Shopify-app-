@@ -21,6 +21,7 @@ import { matchRedirect } from "./redirects";
 import { buildParseContext, parseQuery, type InterpretedItem, type InterpretKind } from "./nlparse";
 import { loadMerchPlan, EMPTY_MERCH_PLAN, type MerchPlan, type MerchAnnotation } from "~/lib/merch/rules";
 import { loadActiveBanners, type Banner } from "~/lib/merch/banners";
+import { attachPreorder } from "~/lib/preorder/annotate.server";
 
 /**
  * Storefront orchestrator (Phase 3 fallback + Phase 4 facets + Phase 5 relevance
@@ -287,7 +288,12 @@ export async function storefrontSearch(
   const started = Date.now();
   const filtersForEcho = safeFilters(params);
   try {
-    return await withShopExec(shopId, (exec) => storefrontSearchWithExec(exec, shopId, params));
+    return await withShopExec(shopId, async (exec) => {
+      const res = await storefrontSearchWithExec(exec, shopId, params);
+      // Phase 12.4: additively attach pre-order badges (no-op without rules).
+      await attachPreorder(exec, shopId, res.products, new Date());
+      return res;
+    });
   } catch (err) {
     if (err instanceof FilterValidationError) throw err;
     return {

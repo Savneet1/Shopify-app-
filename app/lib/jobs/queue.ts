@@ -16,6 +16,8 @@ export const QUEUE = {
   catalogIncremental: "catalog-incremental",
   catalogIncrementalDlq: "catalog-incremental-dlq",
   maintenanceReconcile: "maintenance-reconcile",
+  // Phase 12.3: per-shop back-in-stock notification drain (singleton per shop).
+  restockDrain: "restock-drain",
 } as const;
 
 let boss: PgBoss | null = null;
@@ -61,6 +63,9 @@ export async function startQueues(instance?: PgBoss): Promise<PgBoss> {
     expireInSeconds: 2400,
   });
   await b.createQueue(QUEUE.maintenanceReconcile, { policy: "singleton" });
+  // 'stately' per-shop singletonKey: at most one drain queued + one active per
+  // shop, so sends are never processed by two workers at once (no double-send).
+  await b.createQueue(QUEUE.restockDrain, { policy: "stately", retryLimit: 3, retryBackoff: true, retryDelay: 15 });
   await b.createQueue(QUEUE.catalogIncremental, {
     policy: "short",
     retryLimit: 8,
@@ -129,4 +134,12 @@ export async function enqueueIncremental(
   return b.send(QUEUE.catalogIncremental, payload, {
     singletonKey: payload.dedupeKey,
   });
+}
+
+/** Enqueue a per-shop back-in-stock notification drain. singletonKey = shopId so
+ * at most one drain runs per shop (no double-send). Jobs carry the shop id ONLY
+ * — never an email address. */
+export async function enqueueRestockDrain(shopId: string): Promise<string | null> {
+  const b = await ensureQueues();
+  return b.send(QUEUE.restockDrain, { shopId }, { singletonKey: `restock-drain:${shopId}` });
 }

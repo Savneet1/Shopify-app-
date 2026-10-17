@@ -1,5 +1,7 @@
 import { withShop, type TenantTx } from "~/lib/tenant.server";
 import { logger } from "~/lib/logger.server";
+import { emailHash } from "~/lib/crypto/secret.server";
+import { normalizeEmail } from "~/lib/restock/email";
 
 export type ComplianceTopic =
   | "customers/data_request"
@@ -32,15 +34,31 @@ export interface ComplianceInput {
 export async function processCompliance(input: ComplianceInput): Promise<void> {
   const { shopId, topic } = input;
   await withShop(shopId, async (tx) => {
+    // Phase 12: this app now stores shopper emails (back-in-stock). The request
+    // email is normalised and matched by its KEYED HASH — never by plaintext.
+    const norm = normalizeEmail(input.customerEmail);
+    const hash = norm.valid && norm.email ? emailHash(shopId, norm.email) : null;
+
+    let status: string = topic === "shop/redact" ? "processing" : "no_data";
+    let held = 0;
+
+    if (topic === "customers/data_request" && hash) {
+      held = await countSubscriptions(tx, shopId, hash);
+      status = held > 0 ? "processed" : "no_data"; // do NOT mark no_data when rows exist
+    } else if (topic === "customers/redact" && hash) {
+      held = await redactEmail(tx, shopId, hash); // idempotent delete
+      status = "processed";
+    }
+
     await tx.dataDeletionRequest.create({
       data: {
         shopId,
         topic,
         shopifyCustomerId: input.shopifyCustomerId ?? null,
         customerEmail: input.customerEmail ?? null,
-        // Prisma's generated JSON input type accepts a plain JSON value here.
-        payload: (input.payload ?? {}) as object,
-        status: topic === "shop/redact" ? "processing" : "no_data",
+        // Record WHAT is/was held (count only; no plaintext email in the record).
+        payload: { ...(typeof input.payload === "object" && input.payload ? input.payload : {}), restockSubscriptions: held } as object,
+        status,
         processedAt: topic === "shop/redact" ? null : new Date(),
       },
     });
@@ -51,6 +69,32 @@ export async function processCompliance(input: ComplianceInput): Promise<void> {
   });
 
   logger.info({ shopId, topic }, "processed compliance webhook");
+}
+
+/** Count back-in-stock subscriptions held for a (hashed) email. */
+async function countSubscriptions(tx: TenantTx, shopId: string, emailHashHex: string): Promise<number> {
+  const rows = (await tx.$queryRawUnsafe(
+    `SELECT count(*)::bigint n FROM back_in_stock_subscription WHERE shop_id=$1::uuid AND email_hash=$2`,
+    shopId, emailHashHex,
+  )) as Array<{ n: bigint }>;
+  return Number(rows[0]?.n ?? 0);
+}
+
+/** Delete every subscription (and, via FK cascade, its notification ledger rows)
+ * for a (hashed) email, plus any suppression record. Idempotent. Returns the
+ * number of subscription rows removed. */
+async function redactEmail(tx: TenantTx, shopId: string, emailHashHex: string): Promise<number> {
+  const n = await countSubscriptions(tx, shopId, emailHashHex);
+  // restock_notification has ON DELETE CASCADE from the subscription FK.
+  await tx.$executeRawUnsafe(
+    `DELETE FROM back_in_stock_subscription WHERE shop_id=$1::uuid AND email_hash=$2`,
+    shopId, emailHashHex,
+  );
+  await tx.$executeRawUnsafe(
+    `DELETE FROM restock_suppression WHERE shop_id=$1::uuid AND email_hash=$2`,
+    shopId, emailHashHex,
+  );
+  return n;
 }
 
 /**
@@ -69,6 +113,18 @@ async function eraseShopData(tx: TenantTx, shopId: string): Promise<void> {
   await tx.$executeRawUnsafe(`DELETE FROM analytics_event WHERE shop_id = $1::uuid`, shopId);
   await tx.$executeRawUnsafe(`DELETE FROM analytics_rollup_daily WHERE shop_id = $1::uuid`, shopId);
   await tx.$executeRawUnsafe(`DELETE FROM analytics_settings WHERE shop_id = $1::uuid`, shopId);
+  // Phase 12: back-in-stock / email / messaging tables (raw SQL, RLS-bound). The
+  // FK cascade would also clear these on an owner shop-row delete; this is the
+  // explicit in-tenant erase path. restock_notification cascades from the
+  // subscription delete, and availability has an FK to product.
+  await tx.$executeRawUnsafe(`DELETE FROM back_in_stock_subscription WHERE shop_id = $1::uuid`, shopId);
+  await tx.$executeRawUnsafe(`DELETE FROM restock_notification WHERE shop_id = $1::uuid`, shopId);
+  await tx.$executeRawUnsafe(`DELETE FROM restock_suppression WHERE shop_id = $1::uuid`, shopId);
+  await tx.$executeRawUnsafe(`DELETE FROM restock_availability WHERE shop_id = $1::uuid`, shopId);
+  await tx.$executeRawUnsafe(`DELETE FROM preorder_rule WHERE shop_id = $1::uuid`, shopId);
+  await tx.$executeRawUnsafe(`DELETE FROM countdown_rule WHERE shop_id = $1::uuid`, shopId);
+  await tx.$executeRawUnsafe(`DELETE FROM restock_setting WHERE shop_id = $1::uuid`, shopId);
+  await tx.$executeRawUnsafe(`DELETE FROM email_setting WHERE shop_id = $1::uuid`, shopId);
   // webhook_receipt + data_deletion_request are audit records; retained.
   await tx.shop.update({
     where: { id: shopId },

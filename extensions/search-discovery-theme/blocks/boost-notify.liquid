@@ -1,0 +1,113 @@
+{%- comment -%}
+  Phase 12.2 APP BLOCK — "Notify me when available" (back-in-stock).
+  target = section, for the PRODUCT template (needs the `product` object).
+
+  Additive & resilient: renders ALONGSIDE theme content. The form is shown ONLY
+  when the selected variant (or the product) is currently UNAVAILABLE; when the
+  item is available it renders nothing (hidden). Double opt-in: submitting
+  records a request and the shopper gets a confirmation email before any alert.
+  The consent checkbox is UNCHECKED by default and never pre-ticked. All text is
+  from locales (en + fr). textContent-only rendering (never innerHTML). On any
+  failure it silently shows a generic message and never blocks the page.
+{%- endcomment -%}
+
+{%- liquid
+  assign prefix = block.settings.proxy_prefix | default: 'apps'
+  assign subpath = block.settings.proxy_subpath | default: 'search'
+  assign product_gid = ''
+  if product
+    assign product_gid = product.id | prepend: 'gid://shopify/Product/'
+  endif
+-%}
+
+{%- if product -%}
+<div class="boost-notify" id="boost-notify-{{ block.id }}" data-boost-notify hidden>
+  <h2 class="boost-notify__heading">{{ block.settings.notify_heading | default: 'Notify me when available' | escape }}</h2>
+  <p class="boost-notify__desc">{{ 'boost.notify.description' | t }}</p>
+  <form class="boost-notify__form" data-boost-notify-form novalidate>
+    <label class="boost-notify__label" for="boost-notify-email-{{ block.id }}">{{ 'boost.notify.email_label' | t }}</label>
+    <input class="boost-notify__email" id="boost-notify-email-{{ block.id }}" type="email"
+           name="email" autocomplete="email" inputmode="email"
+           placeholder="{{ 'boost.notify.email_placeholder' | t }}" data-boost-notify-email required>
+    <label class="boost-notify__consent">
+      <input type="checkbox" name="consent" value="on" data-boost-notify-consent>
+      <span>{{ 'boost.notify.consent' | t }}</span>
+    </label>
+    <button class="boost-notify__btn" type="submit" data-boost-notify-submit>{{ block.settings.notify_button | default: 'Notify me' | escape }}</button>
+    <p class="boost-notify__status" data-boost-notify-status role="status" aria-live="polite"></p>
+  </form>
+</div>
+
+<script type="application/json" id="boost-notify-config-{{ block.id }}">
+  {
+    "rootId": {{ 'boost-notify-' | append: block.id | json }},
+    "proxyBase": {{ '/' | append: prefix | append: '/' | append: subpath | json }},
+    "productGid": {{ product_gid | json }},
+    "productAvailable": {% if product.available %}true{% else %}false{% endif %},
+    "variants": [
+      {%- for v in product.variants -%}
+        {%- unless forloop.first -%},{%- endunless -%}
+        { "gid": {{ v.id | prepend: 'gid://shopify/ProductVariant/' | json }}, "available": {% if v.available %}true{% else %}false{% endif %} }
+      {%- endfor -%}
+    ],
+    "locale": {{ request.locale.iso_code | default: 'en' | json }},
+    "consentTextVersion": "v1",
+    "source": "product_page",
+    "timeoutMs": {{ block.settings.timeout_ms | default: 4000 | json }},
+    "labels": {
+      "sending": {{ 'boost.notify.sending' | t | json }},
+      "success": {{ 'boost.notify.success' | t | json }},
+      "error": {{ 'boost.notify.error' | t | json }},
+      "invalidEmail": {{ 'boost.notify.invalid_email' | t | json }},
+      "needConsent": {{ 'boost.notify.need_consent' | t | json }}
+    }
+  }
+</script>
+
+<link rel="stylesheet" href="{{ 'boost.css' | asset_url }}">
+<script src="{{ 'boost-core.js' | asset_url }}" defer></script>
+<script src="{{ 'boost-notify.js' | asset_url }}" defer></script>
+{%- endif -%}
+
+{% schema %}
+{
+  "name": "Back in stock",
+  "target": "section",
+  "settings": [
+    {
+      "type": "text",
+      "id": "notify_heading",
+      "label": "t:boost.settings.notify_heading.label",
+      "default": "Notify me when available"
+    },
+    {
+      "type": "text",
+      "id": "notify_button",
+      "label": "t:boost.settings.notify_button.label",
+      "default": "Notify me"
+    },
+    {
+      "type": "text",
+      "id": "proxy_prefix",
+      "label": "t:boost.settings.proxy_prefix.label",
+      "default": "apps"
+    },
+    {
+      "type": "text",
+      "id": "proxy_subpath",
+      "label": "t:boost.settings.proxy_subpath.label",
+      "default": "search"
+    },
+    {
+      "type": "range",
+      "id": "timeout_ms",
+      "label": "t:boost.settings.timeout_ms.label",
+      "min": 1000,
+      "max": 8000,
+      "step": 500,
+      "unit": "ms",
+      "default": 4000
+    }
+  ]
+}
+{% endschema %}

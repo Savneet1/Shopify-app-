@@ -12,8 +12,9 @@ import {
   fetchProductNode,
   fetchCollectionNode,
 } from "~/lib/shopify/bulk.server";
-import { enqueueFullSync } from "./queue";
-import { runReconciliationTick, runSignalRetention, runAnalyticsPartitionMaintenance } from "./maintenance";
+import { enqueueFullSync, enqueueRestockDrain } from "./queue";
+import { runReconciliationTick, runSignalRetention, runAnalyticsPartitionMaintenance, runRestockMaintenance, selectInstalledShops } from "./maintenance";
+import { runRestockDrainForShop } from "~/lib/restock/drain.server";
 import { prismaRootExec } from "~/lib/db/root-exec.server";
 import { logger } from "~/lib/logger.server";
 
@@ -49,14 +50,27 @@ export async function startWorker(): Promise<PgBoss> {
     { batchSize: concurrency },
     async (jobs) => {
       for (const job of jobs) {
-        await handleCatalogIncremental(job.data, {
+        const res = await handleCatalogIncremental(job.data, {
           runner: withShopExec,
           fetchProductNode,
           fetchCollectionNode,
         });
+        // Phase 12.3: after a product change, kick a per-shop restock drain
+        // (singleton; a no-op when nothing is pending / email unconfigured).
+        if (job.data.entity === "product" && "ok" in res) {
+          await enqueueRestockDrain(job.data.shopId).catch(() => {});
+        }
       }
     },
   );
+
+  // Phase 12.3: per-shop back-in-stock notification drain (singleton per shop).
+  await boss.work<{ shopId: string }>(QUEUE.restockDrain, { batchSize: 1 }, async (jobs) => {
+    for (const job of jobs) {
+      const r = await runRestockDrainForShop(job.data.shopId);
+      logger.info({ shopId: job.data.shopId, ...r }, "restock drain");
+    }
+  });
 
   // Scheduled reconciliation (G8): enqueue a full sync for installed shops not
   // synced within RECONCILE_INTERVAL. Cron + interval configurable via env.
@@ -72,8 +86,14 @@ export async function startWorker(): Promise<PgBoss> {
     // Phase 11: ensure analytics partitions ahead + drop ones past the hard cap
     // (owner definer functions, global/not per-shop).
     const parts = await runAnalyticsPartitionMaintenance(prismaRootExec());
+    // Phase 12.7: back-in-stock retention (per shop, bounded batches, RLS).
+    const restock = await runRestockMaintenance(prismaRootExec(), withShopExec);
+    // Phase 12.3: backstop drain for every installed shop (singleton per shop;
+    // a no-op when nothing is pending / email unconfigured).
+    const shops = await selectInstalledShops(prismaRootExec());
+    for (const id of shops) await enqueueRestockDrain(id).catch(() => {});
     logger.info(
-      { enqueued: n, signalsPurged: purged, partitionsEnsured: parts.ensured.length, partitionsDropped: parts.dropped },
+      { enqueued: n, signalsPurged: purged, partitionsEnsured: parts.ensured.length, partitionsDropped: parts.dropped, restock },
       "reconciliation tick",
     );
   });

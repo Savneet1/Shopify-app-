@@ -5,6 +5,7 @@ import {
   purgeOldAnalyticsEvents, purgeOldAnalyticsRollup, maintainAnalyticsPartitions,
   type PartitionMaintenanceResult,
 } from "~/lib/analytics/retention";
+import { purgeRestockData, type RestockMaintenanceResult } from "~/lib/restock/retention";
 
 /**
  * Scheduled reconciliation (G8). A periodic tick enumerates INSTALLED shops
@@ -89,4 +90,27 @@ export async function runAnalyticsPartitionMaintenance(
   rootExec: Exec, opts: { now?: Date } = {},
 ): Promise<PartitionMaintenanceResult> {
   return maintainAnalyticsPartitions(rootExec, opts);
+}
+
+/**
+ * Phase 12.7 — back-in-stock retention. For each installed shop (RLS-scoped,
+ * bounded batches): purge unconfirmed opt-ins after 7 days; reduce old
+ * notified/unsubscribed/bounced rows to a minimal hashed-email suppression
+ * record; clean up terminal/old notification-ledger rows. Runs on the SAME
+ * maintenance tick as the other retention passes (no new queue).
+ */
+export async function runRestockMaintenance(
+  rootExec: Exec,
+  runner: <T>(shopId: string, fn: (exec: Exec) => Promise<T>) => Promise<T>,
+  opts: { now?: Date; batchSize?: number } = {},
+): Promise<RestockMaintenanceResult> {
+  const ids = await selectInstalledShops(rootExec);
+  const agg: RestockMaintenanceResult = { unconfirmedPurged: 0, reducedToSuppression: 0, notificationsPurged: 0 };
+  for (const id of ids) {
+    const r = await runner(id, (e) => purgeRestockData(e, id, opts));
+    agg.unconfirmedPurged += r.unconfirmedPurged;
+    agg.reducedToSuppression += r.reducedToSuppression;
+    agg.notificationsPurged += r.notificationsPurged;
+  }
+  return agg;
 }
