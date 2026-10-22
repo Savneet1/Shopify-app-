@@ -2,8 +2,9 @@
 
 A production-grade, multi-tenant Shopify **Search, Filter & Discovery** app built
 on the current official **Shopify React Router** template, with PostgreSQL as the
-only data/search engine. This repository is at **Phase 12 (Back-in-stock,
-pre-order messaging, countdown timers, email delivery)**.
+only data/search engine. This repository is at **Phase 12.1 (Back-in-stock /
+email fix batch: SMTP anti-SSRF destination policy, async confirmation + response
+floor, per-shop email-hash pepper, AES associated-data binding)**.
 
 > Phase gating is enforced. Implemented so far: Phase 1 (foundation: auth,
 > embedded shell, multi-tenancy + RLS, privacy webhooks, billing), Phase 2/2.1
@@ -67,8 +68,16 @@ pre-order messaging, countdown timers, email delivery)**.
 > admin; and mandatory GDPR/retention — **no new Shopify scope; the app does NOT
 > make an out-of-stock product purchasable (selling plans / continue-selling are
 > the merchant's Shopify config), and real mail deliverability (SPF/DKIM/DMARC) +
-> live beacon/theme rendering = Requires Verification**). Later phases to follow.
-> See `docs/PHASE*.md`. Stack unchanged: no Redis, no external search/AI/analytics,
+> live beacon/theme rendering = Requires Verification**), Phase 12.1 (fix batch:
+> an **anti-SSRF SMTP destination policy** — hostname/IP-literal shape, ports
+> 25/465/587/2525, resolve-and-pin a public IP with hostname-only TLS SNI +
+> `rejectUnauthorized`, generic errors, no AUTH over plaintext; the confirmation
+> email is sent **asynchronously** by the worker — no outbound I/O in the public
+> request — behind a fixed response-time floor that closes the new-vs-subscribed
+> timing oracle; a **per-shop random pepper** keys email hashes so rotating the
+> app secret can't orphan dedupe/suppression/redact; and the AES password
+> ciphertext is bound to its shop + purpose with associated data). Later phases to
+> follow. See `docs/PHASE*.md`. Stack unchanged: no Redis, no external search/AI/analytics,
 > PostgreSQL-only; scopes = `read_products` (Phase 11 adds no scope; purchase
 > attribution / Web Pixel / real bundle discounts = Requires Verification).
 

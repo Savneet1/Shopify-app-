@@ -10,7 +10,8 @@ import { createPendingNotifications, drainRestockNotifications } from "~/lib/res
 import { purgeRestockData } from "~/lib/restock/retention";
 import { saveRestockSettings } from "~/lib/restock/settings";
 import { saveEmailSettings, loadEmailSettingsView, loadSmtpConfig } from "~/lib/email/settings";
-import { emailHash } from "~/lib/crypto/secret.server";
+import { emailHash, getShopPepper } from "~/lib/crypto/secret.server";
+import { sendConfirmWithExec } from "~/lib/restock/send.server";
 import type { EmailProvider, EmailMessage } from "~/lib/email/provider";
 import { PermanentEmailError, TransientEmailError } from "~/lib/email/errors";
 
@@ -74,6 +75,25 @@ const SUB = (over: Record<string, unknown> = {}) => ({
   email: "shopper@example.com", productGid: G(1), locale: "en", consent: true, consentTextVersion: "v1", source: "product_page", ...over,
 });
 
+const pepperOf = (db: TestDb, shop: string) => db.withShopExec(shop, (e) => getShopPepper(e, shop));
+
+/** Q2: the raw confirm token now lives only in the confirmation email the WORKER
+ * sends. Run that job with a recording provider and pull the token out of the
+ * email, so tests can exercise confirm/expiry without a token return value. */
+async function mintConfirmToken(db: TestDb, shop: string, subscriptionId: string, prov = new RecordingProvider("ok")): Promise<string> {
+  await db.withShopExec(shop, (e) => sendConfirmWithExec(e, shop, subscriptionId, { provider: prov, appUrl: "https://app.example.com" }));
+  const text = prov.sent[0]?.text ?? "";
+  const m = text.match(/[?&]t=([A-Za-z0-9_-]+)/);
+  if (!m) throw new Error("no confirm token in confirmation email");
+  return m[1];
+}
+async function subscribeAndConfirm(db: TestDb, shop: string, sub: Record<string, unknown> = {}): Promise<string> {
+  const r = await db.withShopExec(shop, (e) => subscribe(e, shop, SUB(sub)));
+  const token = await mintConfirmToken(db, shop, r.subscriptionId!);
+  await db.withShopExec(shop, (e) => confirmSubscription(e, shop, r.subscriptionId!, token));
+  return r.subscriptionId!;
+}
+
 describe("Phase 12.2 — subscribe + confirm lifecycle", () => {
   let db: TestDb; let shop: string; let pid: string;
   beforeAll(() => { db = makeDb(); });
@@ -85,18 +105,20 @@ describe("Phase 12.2 — subscribe + confirm lifecycle", () => {
     await buildIndex(db, shop);
   });
 
-  it("created → pending → confirmed", async () => {
+  it("created → pending → (async confirm email) → confirmed", async () => {
     const r = await db.withShopExec(shop, (e) => subscribe(e, shop, SUB()));
     expect(r.outcome).toBe("created");
-    expect(r.confirmToken).toBeTruthy();
+    // Q2: subscribe() no longer returns a raw confirm token (no inline send).
+    expect((r as unknown as Record<string, unknown>).confirmToken).toBeUndefined();
     const status1 = await db.withShopExec(shop, async (e) => (await e.rows<{ status: string }>("SELECT status FROM back_in_stock_subscription WHERE id=$1::uuid", [r.subscriptionId]))[0].status);
     expect(status1).toBe("pending");
-    const c = await db.withShopExec(shop, (e) => confirmSubscription(e, shop, r.subscriptionId!, r.confirmToken!));
+    const token = await mintConfirmToken(db, shop, r.subscriptionId!); // worker sends; token only in the email
+    const c = await db.withShopExec(shop, (e) => confirmSubscription(e, shop, r.subscriptionId!, token));
     expect(c.confirmed).toBe(true);
     const status2 = await db.withShopExec(shop, async (e) => (await e.rows<{ status: string }>("SELECT status FROM back_in_stock_subscription WHERE id=$1::uuid", [r.subscriptionId]))[0].status);
     expect(status2).toBe("confirmed");
     // confirm is not replayable (token cleared)
-    const again = await db.withShopExec(shop, (e) => confirmSubscription(e, shop, r.subscriptionId!, r.confirmToken!));
+    const again = await db.withShopExec(shop, (e) => confirmSubscription(e, shop, r.subscriptionId!, token));
     expect(again.confirmed).toBe(false);
   });
 
@@ -150,7 +172,7 @@ describe("Phase 12.2 — subscribe + confirm lifecycle", () => {
   });
 
   it("suppressed addresses are not re-collected", async () => {
-    const hash = emailHash(shop, "shopper@example.com");
+    const hash = emailHash(await pepperOf(db, shop), shop, "shopper@example.com");
     await db.withShopExec(shop, (e) => e.run(`INSERT INTO restock_suppression (shop_id, email_hash, reason, created_at) VALUES ($1::uuid,$2,'unsubscribed',now())`, [shop, hash]));
     expect((await db.withShopExec(shop, (e) => subscribe(e, shop, SUB()))).outcome).toBe("suppressed");
   });
@@ -167,12 +189,13 @@ describe("Phase 12.2 — subscribe + confirm lifecycle", () => {
     expect(sup).toBe(1);
   });
 
-  it("confirm/unsubscribe with a tampered or expired token fail closed", async () => {
+  it("confirm with a tampered or expired token fails closed", async () => {
     const r = await db.withShopExec(shop, (e) => subscribe(e, shop, SUB()));
+    const token = await mintConfirmToken(db, shop, r.subscriptionId!);
     expect((await db.withShopExec(shop, (e) => confirmSubscription(e, shop, r.subscriptionId!, "tampered"))).confirmed).toBe(false);
-    // expired: confirm with now past the TTL
+    // expired: confirm with now past the 7-day TTL
     const future = new Date(Date.now() + 1000 * 3600 * 24 * 8);
-    expect((await db.withShopExec(shop, (e) => confirmSubscription(e, shop, r.subscriptionId!, r.confirmToken!, { now: future }))).confirmed).toBe(false);
+    expect((await db.withShopExec(shop, (e) => confirmSubscription(e, shop, r.subscriptionId!, token, { now: future }))).confirmed).toBe(false);
   });
 });
 
@@ -185,8 +208,7 @@ describe("Phase 12.3 — restock detection + notification", () => {
     shop = await db.resolveShop("p12n.myshopify.com");
     pid = await seedProduct(db, shop, G(1), V(11), false, "2026-02-01T00:00:00Z");
     await buildIndex(db, shop);
-    const r = await db.withShopExec(shop, (e) => subscribe(e, shop, SUB()));
-    await db.withShopExec(shop, (e) => confirmSubscription(e, shop, r.subscriptionId!, r.confirmToken!));
+    await subscribeAndConfirm(db, shop);
   });
 
   const drain = (mode: "ok" | "permanent" | "transient" = "ok") => {
@@ -277,7 +299,7 @@ describe("Phase 12 — query counts (hot paths)", () => {
     await c1.wrap((e) => subscribe(e, shop, SUB()));
     // eslint-disable-next-line no-console
     console.log(`[query-count] subscribe = ${c1.count()} queries`);
-    expect(c1.count()).toBeLessThanOrEqual(7);
+    expect(c1.count()).toBeLessThanOrEqual(9); // +2 for the lazy per-shop pepper (Q3)
 
     // Confirm all, add MANY more confirmed subscribers, then measure fan-out.
     await db.withShopExec(shop, (e) => e.run("UPDATE back_in_stock_subscription SET status='confirmed', confirm_token_hash=NULL WHERE shop_id=$1::uuid", [shop]));
@@ -287,7 +309,7 @@ describe("Phase 12 — query counts (hot paths)", () => {
         await e.run(
           `INSERT INTO back_in_stock_subscription (id, shop_id, product_id, shopify_product_gid, variant_key, email, email_hash, locale, status, unsubscribe_token_hash, created_at, updated_at)
            VALUES (gen_random_uuid(),$1::uuid,$2::uuid,$3,'', $4,$5,'en','confirmed','h'||$6, now(), now())`,
-          [shop, pid, G(1), `b${i}@e.com`, emailHash(shop, `b${i}@e.com`), String(i)],
+          [shop, pid, G(1), `b${i}@e.com`, emailHash(await pepperOf(db, shop), shop, `b${i}@e.com`), String(i)],
         );
       }
     });

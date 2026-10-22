@@ -84,11 +84,18 @@ class FakeSmtpSocket extends EventEmitter implements SocketLike {
   destroy(): void { this.destroyed = true; this.emit("close"); }
 }
 
+// A public IP the injected resolver returns, so the SSRF policy permits the
+// connect while the fake server (injected) actually answers — no real network.
+const PUBLIC_IP = "93.184.216.34";
+const injectedLookup = async () => [{ address: PUBLIC_IP, family: 4 }];
+
 function providerWith(opts: FakeOpts, cfgOverrides: Partial<ConstructorParameters<typeof SmtpEmailProvider>[0]> = {}, maxRetries = 0) {
   const sockets: FakeSmtpSocket[] = [];
   const provider = new SmtpEmailProvider(
     {
-      host: "127.0.0.1", port: 2525, security: "none",
+      // A public hostname (resolved via the injected lookup) on an allowed port;
+      // implicit TLS so AUTH credentials are permitted by the policy.
+      host: "smtp.example.com", port: 465, security: "tls",
       username: "user", password: "pass",
       fromEmail: "shop@example.com", fromName: "My Shop",
       timeoutMs: 300, maxRetries,
@@ -98,6 +105,7 @@ function providerWith(opts: FakeOpts, cfgOverrides: Partial<ConstructorParameter
       connect: async () => { const s = new FakeSmtpSocket(opts); sockets.push(s); return s; },
       upgrade: async () => { const s = new FakeSmtpSocket(opts); sockets.push(s); return s; },
       sleep: async () => {},
+      lookup: injectedLookup,
     },
   );
   return { provider, sockets };
@@ -123,7 +131,7 @@ describe("Phase 12.1 — SMTP client vs in-process fake server", () => {
   });
 
   it("performs STARTTLS then re-EHLO when security=starttls", async () => {
-    const { provider, sockets } = providerWith({ advertiseStartTls: true }, { security: "starttls" });
+    const { provider, sockets } = providerWith({ advertiseStartTls: true }, { security: "starttls", port: 587 });
     const res = await provider.send(MSG);
     expect(res.delivered).toBe(true);
     // first socket speaks STARTTLS; conversation continues on the upgraded one.
@@ -135,7 +143,7 @@ describe("Phase 12.1 — SMTP client vs in-process fake server", () => {
     // LOGIN we make the caps omit PLAIN via a tweaked fake.
     const sockets: FakeSmtpSocket[] = [];
     const provider = new SmtpEmailProvider(
-      { host: "h", port: 25, security: "none", username: "u", password: "p", fromEmail: "s@e.com", timeoutMs: 300, maxRetries: 0 },
+      { host: "smtp.example.com", port: 465, security: "tls", username: "u", password: "p", fromEmail: "s@e.com", timeoutMs: 300, maxRetries: 0 },
       {
         connect: async () => {
           const s = new FakeSmtpSocket({});
@@ -145,6 +153,7 @@ describe("Phase 12.1 — SMTP client vs in-process fake server", () => {
           sockets.push(s); return s;
         },
         sleep: async () => {},
+        lookup: injectedLookup,
       },
     );
     const res = await provider.send(MSG);

@@ -1,6 +1,7 @@
 import type { Exec } from "~/lib/db/executor";
-import { encryptSecret, decryptSecret, hasEncryptionKey, EncryptionKeyMissingError } from "~/lib/crypto/secret.server";
+import { encryptSecret, decryptSecret, hasEncryptionKey, EncryptionKeyMissingError, passwordAad } from "~/lib/crypto/secret.server";
 import type { SmtpSecurity } from "./smtp";
+import { validateDestination, DestinationPolicyError } from "./destination";
 
 /**
  * Phase 12.1 — per-shop SMTP settings. The password is stored ENCRYPTED
@@ -61,12 +62,14 @@ async function readRow(exec: Exec, shopId: string): Promise<Row | null> {
   return rows[0] ?? null;
 }
 
-function computeConfigured(row: Row | null): boolean {
+function computeConfigured(row: Row | null, shopId: string): boolean {
   if (!row || !row.host || !row.port || !row.from_email) return false;
+  // Destination must satisfy the SSRF policy (host shape + allowed port + 465⇒TLS).
+  if (!validateDestination({ host: row.host, port: row.port, security: row.security, hasCredentials: Boolean(row.username) }).ok) return false;
   if (row.username) {
     // A username implies auth; we must be able to decrypt the password to send.
     if (!row.password_cipher || !hasEncryptionKey()) return false;
-    try { decryptSecret(row.password_cipher); } catch { return false; }
+    try { decryptSecret(row.password_cipher, passwordAad(shopId)); } catch { return false; }
   }
   return true;
 }
@@ -75,7 +78,7 @@ export async function loadEmailSettingsView(exec: Exec, shopId: string): Promise
   const row = await readRow(exec, shopId);
   let last2: string | null = null;
   if (row?.password_cipher && hasEncryptionKey()) {
-    try { const p = decryptSecret(row.password_cipher); last2 = p.length >= 2 ? p.slice(-2) : null; } catch { last2 = null; }
+    try { const p = decryptSecret(row.password_cipher, passwordAad(shopId)); last2 = p.length >= 2 ? p.slice(-2) : null; } catch { last2 = null; }
   }
   return {
     host: row?.host ?? null,
@@ -87,7 +90,7 @@ export async function loadEmailSettingsView(exec: Exec, shopId: string): Promise
     replyTo: row?.reply_to ?? null,
     passwordSet: Boolean(row?.password_cipher),
     passwordLast2: last2,
-    configured: computeConfigured(row),
+    configured: computeConfigured(row, shopId),
     encryptionAvailable: hasEncryptionKey(),
   };
 }
@@ -126,6 +129,15 @@ export async function saveEmailSettings(
   const fromName = input.fromName !== undefined ? cleanStr(input.fromName, 120) : (existing?.from_name ?? null);
   const replyTo = input.replyTo !== undefined ? cleanStr(input.replyTo, 254) : (existing?.reply_to ?? null);
 
+  // Q1: enforce the SSRF destination policy at SAVE time (fast feedback). The
+  // same policy is re-applied authoritatively at every connect. A null host is
+  // allowed (settings not yet filled in); a present host must pass.
+  const willHaveCreds = Boolean(username);
+  if (host) {
+    const verdict = validateDestination({ host, port, security, hasCredentials: willHaveCreds });
+    if (!verdict.ok) throw new DestinationPolicyError(verdict.reason);
+  }
+
   let passwordCipher: string | null = existing?.password_cipher ?? null;
   if (input.clearPassword) {
     passwordCipher = null;
@@ -134,7 +146,7 @@ export async function saveEmailSettings(
       // Refuse to persist a password with no key. Nothing is written.
       throw new EncryptionKeyMissingError();
     }
-    passwordCipher = encryptSecret(input.password);
+    passwordCipher = encryptSecret(input.password, passwordAad(shopId));
   }
 
   await exec.run(
@@ -162,10 +174,31 @@ export async function loadSmtpConfig(exec: Exec, shopId: string): Promise<{
   let password: string | null = null;
   if (row.username) {
     if (!row.password_cipher || !hasEncryptionKey()) return null;
-    try { password = decryptSecret(row.password_cipher); } catch { return null; }
+    try { password = decryptSecret(row.password_cipher, passwordAad(shopId)); } catch { return null; }
   }
   return {
     host: row.host, port: row.port, security: row.security, username: row.username,
     password, fromEmail: row.from_email, fromName: row.from_name, replyTo: row.reply_to,
   };
+}
+
+export const SEND_TEST_COOLDOWN_MS = 60_000;
+
+/**
+ * Q4(b) — DB-backed send-test cooldown (replaces the per-process in-memory Map,
+ * so it holds across instances/restarts). Atomically stamps last_test_email_at
+ * only when the cooldown has elapsed; returns whether this call may send.
+ */
+export async function claimSendTest(
+  exec: Exec, shopId: string, opts: { now?: Date; cooldownMs?: number } = {},
+): Promise<boolean> {
+  const now = opts.now ?? new Date();
+  const cooldownMs = opts.cooldownMs ?? SEND_TEST_COOLDOWN_MS;
+  const n = await exec.run(
+    `UPDATE email_setting SET last_test_email_at=$2::timestamptz
+     WHERE shop_id=$1::uuid
+       AND (last_test_email_at IS NULL OR last_test_email_at < $2::timestamptz - make_interval(secs => $3::double precision))`,
+    [shopId, now.toISOString(), cooldownMs / 1000],
+  );
+  return n > 0;
 }

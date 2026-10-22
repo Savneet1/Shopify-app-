@@ -2,14 +2,16 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { makeDb, type TestDb } from "./helpers/db";
 import { upsertProduct, upsertVariant } from "~/lib/catalog/store";
 import { createIndexVersion, buildDocs, validateIndexVersion, activateIndexVersion } from "~/lib/index/engine";
-import { subscribe, confirmSubscription } from "~/lib/restock/subscriptions";
+import { subscribe } from "~/lib/restock/subscriptions";
 import { saveEmailSettings, loadEmailSettingsView, loadSmtpConfig } from "~/lib/email/settings";
 import { saveRestockSettings } from "~/lib/restock/settings";
 import { createPreorderRule } from "~/lib/preorder/rules";
 import { createCountdownRule } from "~/lib/countdown/rules";
 import { deleteAllForEmail } from "~/lib/restock/admin";
 import { purgeRestockData } from "~/lib/restock/retention";
-import { emailHash } from "~/lib/crypto/secret.server";
+import { emailHash, getShopPepper } from "~/lib/crypto/secret.server";
+
+const pepperOf = (db: TestDb, shop: string) => db.withShopExec(shop, (e) => getShopPepper(e, shop));
 
 /*
  * Phase 12.7 — privacy, RLS, encryption-at-rest, retention, and the GDPR data
@@ -42,6 +44,7 @@ const NEW_TABLES = [
   "email_setting", "restock_setting", "back_in_stock_subscription",
   "restock_availability", "restock_notification", "restock_suppression",
   "preorder_rule", "countdown_rule",
+  "restock_hash_pepper", // Phase 12.1 Q3
 ];
 
 describe("Phase 12.7 — RLS + cross-shop isolation on every new table", () => {
@@ -54,28 +57,28 @@ describe("Phase 12.7 — RLS + cross-shop isolation on every new table", () => {
     shopB = await db.resolveShop("p12pb.myshopify.com");
   });
 
-  it("all eight tables have RLS ENABLED + FORCED", async () => {
+  it("all new tables have RLS ENABLED + FORCED", async () => {
     const { rows } = await db.runtimePool.query<{ relname: string; rls: boolean; forced: boolean }>(
       `SELECT c.relname, c.relrowsecurity rls, c.relforcerowsecurity forced
        FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
        WHERE n.nspname='public' AND c.relname = ANY($1)`, [NEW_TABLES],
     );
-    expect(rows.length).toBe(8);
+    expect(rows.length).toBe(NEW_TABLES.length);
     for (const r of rows) { expect(r.rls, r.relname).toBe(true); expect(r.forced, r.relname).toBe(true); }
   });
 
   it("rows written by shop A are invisible to shop B (every table)", async () => {
     const pidA = await seedUnavailable(db, shopA, 1);
     // populate each table for shop A
-    await db.withShopExec(shopA, (e) => saveEmailSettings(e, shopA, { host: "smtp.x", port: 587, fromEmail: "s@x.com" }));
+    await db.withShopExec(shopA, (e) => saveEmailSettings(e, shopA, { host: "smtp.example.com", port: 587, fromEmail: "s@x.com" }));
     await db.withShopExec(shopA, (e) => saveRestockSettings(e, shopA, { perEmailDailyCap: 9 }));
     await db.withShopExec(shopA, (e) => createPreorderRule(e, shopA, { matchType: "tag", matchValue: "pre" }));
     await db.withShopExec(shopA, (e) => createCountdownRule(e, shopA, { scope: "global", endsAt: "2027-01-01T00:00:00Z" }));
     const sub = await db.withShopExec(shopA, (e) => subscribe(e, shopA, { email: "x@y.com", productGid: G(1), consent: true }));
-    await db.withShopExec(shopA, (e) => confirmSubscription(e, shopA, sub.subscriptionId!, sub.confirmToken!));
     await db.withShopExec(shopA, (e) => e.run(`INSERT INTO restock_availability (shop_id,product_id,variant_key,available,epoch) VALUES ($1::uuid,$2::uuid,'',false,0)`, [shopA, pidA]));
     await db.withShopExec(shopA, (e) => e.run(`INSERT INTO restock_notification (shop_id,subscription_id,epoch,status) VALUES ($1::uuid,$2::uuid,1,'pending')`, [shopA, sub.subscriptionId]));
-    await db.withShopExec(shopA, (e) => e.run(`INSERT INTO restock_suppression (shop_id,email_hash,reason) VALUES ($1::uuid,$2,'unsubscribed')`, [shopA, emailHash(shopA, "z@z.com")]));
+    const pepA = await pepperOf(db, shopA); // also ensures the pepper row exists for shop A
+    await db.withShopExec(shopA, (e) => e.run(`INSERT INTO restock_suppression (shop_id,email_hash,reason) VALUES ($1::uuid,$2,'unsubscribed')`, [shopA, emailHash(pepA, shopA, "z@z.com")]));
 
     for (const t of NEW_TABLES) {
       const a = await db.withShopExec(shopA, async (e) => (await e.rows<{ n: number }>(`SELECT count(*)::int n FROM ${t}`, []))[0].n);
@@ -167,12 +170,13 @@ describe("Phase 12.7 — retention purge (injected clock, bounded batches)", () 
   it("purges unconfirmed rows older than 7 days; keeps fresh ones", async () => {
     // one fresh pending + two stale pending (created 10 days ago)
     await db.withShopExec(shop, (e) => subscribe(e, shop, { email: "fresh@e.com", productGid: G(1), consent: true }));
+    const pep = await pepperOf(db, shop);
     await db.withShopExec(shop, async (e) => {
       for (const who of ["old1@e.com", "old2@e.com"]) {
         await e.run(
           `INSERT INTO back_in_stock_subscription (id,shop_id,product_id,shopify_product_gid,variant_key,email,email_hash,locale,status,unsubscribe_token_hash,created_at,updated_at)
            VALUES (gen_random_uuid(),$1::uuid,$2::uuid,$3,'',$4,$5,'en','pending','h'||$4, now() - interval '10 days', now() - interval '10 days')`,
-          [shop, pid, G(1), who, emailHash(shop, who)],
+          [shop, pid, G(1), who, emailHash(pep, shop, who)],
         );
       }
     });
@@ -184,11 +188,12 @@ describe("Phase 12.7 — retention purge (injected clock, bounded batches)", () 
   });
 
   it("reduces old notified/unsubscribed rows to a hashed-email suppression record", async () => {
+    const pep = await pepperOf(db, shop);
     await db.withShopExec(shop, async (e) => {
       await e.run(
         `INSERT INTO back_in_stock_subscription (id,shop_id,product_id,shopify_product_gid,variant_key,email,email_hash,locale,status,unsubscribe_token_hash,created_at,updated_at)
          VALUES (gen_random_uuid(),$1::uuid,$2::uuid,$3,'',$4,$5,'en','notified','h'||$4, now() - interval '400 days', now() - interval '400 days')`,
-        [shop, pid, G(1), "done@e.com", emailHash(shop, "done@e.com")],
+        [shop, pid, G(1), "done@e.com", emailHash(pep, shop, "done@e.com")],
       );
     });
     const r = await db.withShopExec(shop, (e) => purgeRestockData(e, shop, { now: new Date() }));
@@ -200,17 +205,66 @@ describe("Phase 12.7 — retention purge (injected clock, bounded batches)", () 
   });
 
   it("purge is bounded by the batch size", async () => {
+    const pep = await pepperOf(db, shop);
     await db.withShopExec(shop, async (e) => {
       for (let i = 0; i < 5; i++) {
         await e.run(
           `INSERT INTO back_in_stock_subscription (id,shop_id,product_id,shopify_product_gid,variant_key,email,email_hash,locale,status,unsubscribe_token_hash,created_at,updated_at)
            VALUES (gen_random_uuid(),$1::uuid,$2::uuid,$3,'',$4,$5,'en','pending','h'||$4, now() - interval '10 days', now() - interval '10 days')`,
-          [shop, pid, G(1), `b${i}@e.com`, emailHash(shop, `b${i}@e.com`)],
+          [shop, pid, G(1), `b${i}@e.com`, emailHash(pep, shop, `b${i}@e.com`)],
         );
       }
     });
     const r = await db.withShopExec(shop, (e) => purgeRestockData(e, shop, { now: new Date(), batchSize: 2 }));
     expect(r.unconfirmedPurged).toBe(2); // capped at the batch size
+  });
+});
+
+describe("Phase 12.1 Q3 — per-shop email pepper", () => {
+  let db: TestDb; let shopA: string; let shopB: string;
+  beforeAll(() => { db = makeDb(); });
+  afterAll(() => db.close());
+  beforeEach(async () => {
+    await db.resetDb();
+    shopA = await db.resolveShop("p12pepA.myshopify.com");
+    shopB = await db.resolveShop("p12pepB.myshopify.com");
+  });
+
+  it("is generated once, is stable, and differs per shop", async () => {
+    const a1 = await pepperOf(db, shopA);
+    const a2 = await pepperOf(db, shopA);
+    expect(a1).toBe(a2);                       // stable (reused, not regenerated)
+    expect(/^[0-9a-f]{64}$/.test(a1)).toBe(true);
+    const b1 = await pepperOf(db, shopB);
+    expect(b1).not.toBe(a1);                   // different per shop
+  });
+
+  it("two concurrent first-use requests converge on ONE pepper (no race)", async () => {
+    const [x, y, z] = await Promise.all([pepperOf(db, shopA), pepperOf(db, shopA), pepperOf(db, shopA)]);
+    expect(x).toBe(y);
+    expect(y).toBe(z);
+    const n = await db.withShopExec(shopA, async (e) => (await e.rows<{ n: number }>("SELECT count(*)::int n FROM restock_hash_pepper WHERE shop_id=$1::uuid", [shopA]))[0].n);
+    expect(n).toBe(1);
+  });
+
+  it("rotating SHOPIFY_API_SECRET does not change the stored hashes (dedupe/suppression survive)", async () => {
+    await seedUnavailable(db, shopA, 1);
+    // subscribe once, then (with a rotated app secret) subscribe again → dedupe
+    // must still recognise the same address.
+    expect((await db.withShopExec(shopA, (e) => subscribe(e, shopA, { email: "keep@e.com", productGid: G(1), consent: true }))).outcome).toBe("created");
+    const saved = process.env.SHOPIFY_API_SECRET;
+    try {
+      process.env.SHOPIFY_API_SECRET = "rotated-secret-" + Date.now();
+      expect((await db.withShopExec(shopA, (e) => subscribe(e, shopA, { email: "keep@e.com", productGid: G(1), consent: true }))).outcome).toBe("exists");
+    } finally { process.env.SHOPIFY_API_SECRET = saved; }
+  });
+
+  it("the pepper is erased when the shop's data is erased", async () => {
+    await pepperOf(db, shopA);
+    // Mirror eraseShopData's pepper delete (compliance.server.ts runs this under Prisma on CI).
+    await db.withShopExec(shopA, (e) => e.run("DELETE FROM restock_hash_pepper WHERE shop_id=$1::uuid", [shopA]));
+    const n = await db.withShopExec(shopA, async (e) => (await e.rows<{ n: number }>("SELECT count(*)::int n FROM restock_hash_pepper WHERE shop_id=$1::uuid", [shopA]))[0].n);
+    expect(n).toBe(0);
   });
 });
 
@@ -226,9 +280,8 @@ describe("Phase 12.7 — GDPR data operations (data_request / redact)", () => {
 
   it("counts what is held for an email, then deletes it idempotently (cascading the ledger)", async () => {
     const sub = await db.withShopExec(shop, (e) => subscribe(e, shop, { email: "gdpr@e.com", productGid: G(1), consent: true }));
-    await db.withShopExec(shop, (e) => confirmSubscription(e, shop, sub.subscriptionId!, sub.confirmToken!));
     await db.withShopExec(shop, (e) => e.run(`INSERT INTO restock_notification (shop_id,subscription_id,epoch,status) VALUES ($1::uuid,$2::uuid,1,'pending')`, [shop, sub.subscriptionId]));
-    const hash = emailHash(shop, "gdpr@e.com");
+    const hash = emailHash(await pepperOf(db, shop), shop, "gdpr@e.com");
     // data_request: count held (mirrors compliance.server.ts)
     const held = await db.withShopExec(shop, async (e) => (await e.rows<{ n: number }>("SELECT count(*)::int n FROM back_in_stock_subscription WHERE shop_id=$1::uuid AND email_hash=$2", [shop, hash]))[0].n);
     expect(held).toBe(1);

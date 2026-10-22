@@ -1,8 +1,14 @@
 import net from "node:net";
 import tls from "node:tls";
+import dns from "node:dns";
 import type { EmailMessage, EmailProvider, EmailSendResult } from "./provider";
 import { PermanentEmailError, TransientEmailError } from "./errors";
 import { buildMessage } from "./mime";
+import {
+  validateDestination, assertPublicDestination, DestinationPolicyError,
+  type LookupAllFn,
+} from "./destination";
+import { logger } from "~/lib/logger.server";
 
 /**
  * Phase 12.1 — SMTP email provider using ONLY Node built-ins (node:net /
@@ -32,6 +38,8 @@ export interface SmtpConfig {
   replyTo?: string | null;
   /** Per-step + overall socket timeout (ms). */
   timeoutMs?: number;
+  /** Connect/greeting timeout (ms); kept much shorter than the whole-send one. */
+  connectTimeoutMs?: number;
   /** Retry count for TRANSIENT failures (total attempts = maxRetries + 1). */
   maxRetries?: number;
   /** EHLO name. */
@@ -44,17 +52,21 @@ export interface SocketLike extends NodeJS.EventEmitter {
   setTimeout?(ms: number): void;
 }
 
-export type ConnectFn = (opts: { host: string; port: number; tls: boolean }) => Promise<SocketLike>;
+// `host` is the PINNED IP to connect to; `servername` is the original hostname,
+// used only for TLS SNI + certificate verification (defeats DNS rebinding).
+export type ConnectFn = (opts: { host: string; port: number; tls: boolean; servername?: string }) => Promise<SocketLike>;
 export type SleepFn = (ms: number) => Promise<void>;
 export type UpgradeFn = (socket: SocketLike, host: string) => Promise<SocketLike>;
 
 const DEFAULT_TIMEOUT = 15000;
+const DEFAULT_CONNECT_TIMEOUT = 5000;
 
-const realConnect: ConnectFn = ({ host, port, tls: useTls }) =>
+const realConnect: ConnectFn = ({ host, port, tls: useTls, servername }) =>
   new Promise((resolve, reject) => {
-    const onErr = (e: Error) => reject(new TransientEmailError(`connect failed: ${e.message}`));
+    // Generic error only — never leak host/port/errno to the merchant.
+    const onErr = () => reject(new TransientEmailError("could not connect"));
     if (useTls) {
-      const s = tls.connect({ host, port, servername: host }, () => resolve(s));
+      const s = tls.connect({ host, port, servername, rejectUnauthorized: true }, () => resolve(s));
       s.once("error", onErr);
     } else {
       const s = net.connect({ host, port }, () => resolve(s));
@@ -64,8 +76,16 @@ const realConnect: ConnectFn = ({ host, port, tls: useTls }) =>
 
 const realUpgrade: UpgradeFn = (socket, host) =>
   new Promise((resolve, reject) => {
-    const s = tls.connect({ socket: socket as unknown as net.Socket, servername: host }, () => resolve(s));
-    s.once("error", (e: Error) => reject(new TransientEmailError(`STARTTLS upgrade failed: ${e.message}`)));
+    const s = tls.connect({ socket: socket as unknown as net.Socket, servername: host, rejectUnauthorized: true }, () => resolve(s));
+    s.once("error", () => reject(new TransientEmailError("TLS failed")));
+  });
+
+const realLookup: LookupAllFn = (hostname) =>
+  new Promise((resolve, reject) => {
+    dns.lookup(hostname, { all: true }, (err, addresses) => {
+      if (err) reject(err);
+      else resolve(addresses.map((a) => ({ address: a.address, family: a.family })));
+    });
   });
 
 const realSleep: SleepFn = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -146,18 +166,19 @@ class SmtpConnection {
   }
 }
 
-/** Classify a reply code: 5xx permanent, 4xx transient, else transient. */
-function assertCode(resp: SmtpResponse, expected: number[], what: string): void {
+/** Classify a reply code: 5xx permanent, 4xx/other transient. `category` is a
+ * GENERIC merchant-safe label; the numeric code stays internal (never in the
+ * message). */
+function assertCode(resp: SmtpResponse, expected: number[], category: string): void {
   if (expected.includes(resp.code)) return;
-  const msg = `${what}: unexpected ${resp.code}`;
-  if (resp.code >= 500 && resp.code < 600) throw new PermanentEmailError(msg, resp.code);
-  throw new TransientEmailError(msg, resp.code);
+  if (resp.code >= 500 && resp.code < 600) throw new PermanentEmailError(category, resp.code);
+  throw new TransientEmailError(category, resp.code);
 }
 
 export class SmtpEmailProvider implements EmailProvider {
   constructor(
     private cfg: SmtpConfig,
-    private deps: { connect?: ConnectFn; upgrade?: UpgradeFn; sleep?: SleepFn } = {},
+    private deps: { connect?: ConnectFn; upgrade?: UpgradeFn; sleep?: SleepFn; lookup?: LookupAllFn } = {},
   ) {}
 
   async send(message: EmailMessage): Promise<EmailSendResult> {
@@ -179,9 +200,12 @@ export class SmtpEmailProvider implements EmailProvider {
   private async attempt(message: EmailMessage): Promise<EmailSendResult> {
     const cfg = this.cfg;
     const timeout = cfg.timeoutMs ?? DEFAULT_TIMEOUT;
+    const connectTimeout = Math.min(cfg.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT, timeout);
     const connect = this.deps.connect ?? realConnect;
     const upgrade = this.deps.upgrade ?? realUpgrade;
+    const lookup = this.deps.lookup ?? realLookup;
     const ehlo = cfg.ehloName || "localhost";
+    const hasCreds = Boolean(cfg.username && cfg.password);
 
     // Build + validate the message BEFORE any network I/O (header injection,
     // size cap, address validation all happen here and throw Permanent).
@@ -196,41 +220,69 @@ export class SmtpEmailProvider implements EmailProvider {
       headers: message.headers,
     });
 
-    const sock = await connect({ host: cfg.host, port: cfg.port, tls: cfg.security === "tls" });
-    const conn = new SmtpConnection(sock, timeout);
+    // Q1 — destination policy BEFORE any connect. A violation is PERMANENT (no
+    // retry, no hang) and its message is generic (no host/port/IP/errno leak).
+    const verdict = validateDestination({ host: cfg.host, port: cfg.port, security: cfg.security, hasCredentials: hasCreds });
+    if (!verdict.ok) throw new DestinationPolicyError();
+    // Q1c — never send AUTH over a plaintext connection.
+    if (hasCreds && cfg.security === "none") throw new PermanentEmailError("credentials require TLS");
+
+    // Dev-only escape (ignored in production, with a one-time warning).
+    const allowPrivate = allowPrivateHosts();
+
+    // Resolve + reject any non-public address, then PIN the validated IP.
+    let pinnedIp: string;
     try {
-      assertCode(await conn.read(), [220], "greeting");
+      pinnedIp = await assertPublicDestination(cfg.host, { lookup, allowPrivate });
+    } catch (err) {
+      if (err instanceof DestinationPolicyError) throw err;
+      throw new DestinationPolicyError();
+    }
+
+    // Connect to the PINNED IP; the hostname is used ONLY for TLS SNI + cert
+    // verification (rejectUnauthorized true), so a rebind to a private IP after
+    // the check cannot take effect.
+    const sock = await connect({ host: pinnedIp, port: cfg.port, tls: cfg.security === "tls", servername: cfg.host });
+    const conn = new SmtpConnection(sock, timeout);
+    // A short, independent guard on the greeting so a silent/hung host fails fast.
+    const greetingTimer = setTimeout(() => { try { sock.destroy(); } catch { /* ignore */ } }, connectTimeout);
+    try {
+      assertCode(await conn.read(), [220], "could not connect");
+      clearTimeout(greetingTimer);
       conn.write(`EHLO ${ehlo}\r\n`);
       let caps = await conn.read();
-      assertCode(caps, [250], "EHLO");
+      assertCode(caps, [250], "could not connect");
 
       if (cfg.security === "starttls") {
         conn.write("STARTTLS\r\n");
-        assertCode(await conn.read(), [220], "STARTTLS");
+        assertCode(await conn.read(), [220], "TLS failed");
         const upgraded = await upgrade(sock, cfg.host);
         conn.rebind(upgraded);
         conn.write(`EHLO ${ehlo}\r\n`);
         caps = await conn.read();
-        assertCode(caps, [250], "EHLO(tls)");
+        assertCode(caps, [250], "TLS failed");
       }
 
-      if (cfg.username && cfg.password) {
-        await this.authenticate(conn, caps.text, cfg.username, cfg.password);
+      if (hasCreds) {
+        // Defence in depth: AUTH only after TLS (implicit or STARTTLS-upgraded).
+        if (cfg.security === "none") throw new PermanentEmailError("credentials require TLS");
+        await this.authenticate(conn, caps.text, cfg.username!, cfg.password!);
       }
 
       conn.write(`MAIL FROM:<${built.from}>\r\n`);
-      assertCode(await conn.read(), [250], "MAIL FROM");
+      assertCode(await conn.read(), [250], "server rejected the message");
       conn.write(`RCPT TO:<${built.to}>\r\n`);
-      assertCode(await conn.read(), [250, 251], "RCPT TO");
+      assertCode(await conn.read(), [250, 251], "server rejected the message");
       conn.write("DATA\r\n");
-      assertCode(await conn.read(), [354], "DATA");
+      assertCode(await conn.read(), [354], "server rejected the message");
       conn.write(built.data + "\r\n.\r\n");
       const dataResp = await conn.read();
-      assertCode(dataResp, [250], "message body");
+      assertCode(dataResp, [250], "server rejected the message");
 
       try { conn.write("QUIT\r\n"); await conn.read(); } catch { /* QUIT best-effort */ }
       return { delivered: true, provider: "smtp", id: dataResp.text.match(/\b([0-9A-Za-z._-]{6,})\b/)?.[1] };
     } finally {
+      clearTimeout(greetingTimer);
       conn.close();
     }
   }
@@ -240,15 +292,28 @@ export class SmtpEmailProvider implements EmailProvider {
     const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64");
     if (mechs.includes("PLAIN") || !mechs.includes("LOGIN")) {
       conn.write(`AUTH PLAIN ${b64("\u0000" + user + "\u0000" + pass)}\r\n`);
-      assertCode(await conn.read(), [235], "AUTH PLAIN");
+      assertCode(await conn.read(), [235], "authentication failed");
       return;
     }
     // AUTH LOGIN
     conn.write("AUTH LOGIN\r\n");
-    assertCode(await conn.read(), [334], "AUTH LOGIN");
+    assertCode(await conn.read(), [334], "authentication failed");
     conn.write(`${b64(user)}\r\n`);
-    assertCode(await conn.read(), [334], "AUTH LOGIN user");
+    assertCode(await conn.read(), [334], "authentication failed");
     conn.write(`${b64(pass)}\r\n`);
-    assertCode(await conn.read(), [235], "AUTH LOGIN pass");
+    assertCode(await conn.read(), [235], "authentication failed");
   }
+}
+
+// Dev-only escape hatch: allow private SMTP hosts for LOCAL development only.
+// IGNORED under NODE_ENV=production (with a one-time startup warning).
+let warnedAllowPrivate = false;
+function allowPrivateHosts(): boolean {
+  const flag = process.env.SMTP_ALLOW_PRIVATE_HOSTS === "1" || process.env.SMTP_ALLOW_PRIVATE_HOSTS === "true";
+  if (!flag) return false;
+  if (process.env.NODE_ENV === "production") {
+    if (!warnedAllowPrivate) { warnedAllowPrivate = true; logger.warn("SMTP_ALLOW_PRIVATE_HOSTS is ignored in production"); }
+    return false;
+  }
+  return true;
 }

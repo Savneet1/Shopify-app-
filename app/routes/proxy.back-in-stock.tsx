@@ -1,25 +1,27 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { handleProxy } from "~/lib/search/proxy.server";
 import { withShopExec } from "~/lib/tenant.server";
-import { subscribe } from "~/lib/restock/subscriptions";
-import { sendConfirmationEmail } from "~/lib/restock/send.server";
+import { enqueueRestockConfirm } from "~/lib/jobs/queue";
+import { runSubscribeRequest } from "~/lib/restock/subscribe-request.server";
 
 /**
- * Phase 12.2 — back-in-stock subscription capture (App Proxy).
- * Storefront URL: /apps/<subpath>/back-in-stock   (POST JSON)
- * Proxied to:     /proxy/back-in-stock
+ * Phase 12.2 / 12.1 Q2 — back-in-stock subscription capture (App Proxy).
  *
  * Body: { email, productGid, variantGid?, locale?, consent, consentTextVersion?, source? }
  * Shop is signature-verified by handleProxy (per-shop rate limit + never-5xx).
  * ALL input is validated before any SQL. The response is GENERIC and IDENTICAL
  * whether the email is new, already subscribed, suppressed, capped, or the
- * product is not applicable — it never reveals whether a subscription exists.
- * On a freshly created row a double-opt-in confirmation email is sent (if email
- * is configured) BEFORE any alert is ever possible.
+ * product is not applicable.
+ *
+ * Q2 fixes:
+ *  - NO outbound network I/O in this request: a freshly created row only ENQUEUES
+ *    a confirmation job (payload = opaque ids); the worker sends the email. This
+ *    removes the 60–100× "new vs already-subscribed" timing oracle and the risk
+ *    of a slow/hanging SMTP host holding the request open.
+ *  - A deterministic minimum response time (RESPONSE_FLOOR_MS) is applied to
+ *    EVERY outcome, masking the sub-millisecond "enqueued vs exists" difference.
  */
 const MAX_BODY_BYTES = 4 * 1024;
-
-const GENERIC = { ok: true, status: "received" as const };
 
 async function readBody(request: Request): Promise<Record<string, unknown> | null> {
   try {
@@ -27,33 +29,16 @@ async function readBody(request: Request): Promise<Record<string, unknown> | nul
     if (text.length > MAX_BODY_BYTES) return null;
     const parsed = JSON.parse(text);
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 async function handle(request: Request) {
   const body = await readBody(request);
   return handleProxy(request, async ({ shopId }) => {
-    if (!body) return GENERIC; // malformed/oversized → generic (never reveals anything)
-    const result = await withShopExec(shopId, (e) =>
-      subscribe(e, shopId, {
-        email: body.email,
-        productGid: body.productGid,
-        variantGid: body.variantGid,
-        locale: body.locale,
-        consent: body.consent,
-        consentTextVersion: body.consentTextVersion,
-        source: body.source,
-      }),
+    const started = Date.now();
+    return withShopExec(shopId, (e) =>
+      runSubscribeRequest(e, shopId, body, { enqueueConfirm: enqueueRestockConfirm, startedMs: started }),
     );
-    // Only a freshly created row triggers a confirmation email (double opt-in).
-    if (result.outcome === "created" && result.subscriptionId && result.confirmToken && result.email) {
-      await withShopExec(shopId, (e) =>
-        sendConfirmationEmail(e, shopId, result.subscriptionId!, result.confirmToken!, result.email!),
-      ).catch(() => {});
-    }
-    return GENERIC; // identical response for every outcome
   });
 }
 

@@ -18,6 +18,8 @@ export const QUEUE = {
   maintenanceReconcile: "maintenance-reconcile",
   // Phase 12.3: per-shop back-in-stock notification drain (singleton per shop).
   restockDrain: "restock-drain",
+  // Phase 12.1 Q2: async double-opt-in confirmation send (singleton per sub).
+  restockConfirm: "restock-confirm",
 } as const;
 
 let boss: PgBoss | null = null;
@@ -66,6 +68,8 @@ export async function startQueues(instance?: PgBoss): Promise<PgBoss> {
   // 'stately' per-shop singletonKey: at most one drain queued + one active per
   // shop, so sends are never processed by two workers at once (no double-send).
   await b.createQueue(QUEUE.restockDrain, { policy: "stately", retryLimit: 3, retryBackoff: true, retryDelay: 15 });
+  // Confirmation send: at most one per subscription; bounded retries on transient.
+  await b.createQueue(QUEUE.restockConfirm, { policy: "stately", retryLimit: 5, retryBackoff: true, retryDelay: 15 });
   await b.createQueue(QUEUE.catalogIncremental, {
     policy: "short",
     retryLimit: 8,
@@ -142,4 +146,12 @@ export async function enqueueIncremental(
 export async function enqueueRestockDrain(shopId: string): Promise<string | null> {
   const b = await ensureQueues();
   return b.send(QUEUE.restockDrain, { shopId }, { singletonKey: `restock-drain:${shopId}` });
+}
+
+/** Enqueue the async double-opt-in confirmation send for ONE subscription.
+ * singletonKey = subscription id (at most one queued). Payload carries only
+ * opaque ids (shop id + subscription id) — never an email address (Q2). */
+export async function enqueueRestockConfirm(shopId: string, subscriptionId: string): Promise<string | null> {
+  const b = await ensureQueues();
+  return b.send(QUEUE.restockConfirm, { shopId, subscriptionId }, { singletonKey: `restock-confirm:${subscriptionId}` });
 }

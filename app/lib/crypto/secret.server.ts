@@ -1,135 +1,136 @@
 import crypto from "node:crypto";
+import type { Exec } from "~/lib/db/executor";
 
 /**
- * Phase 12 — secret handling for email credentials and PII-safe lookups.
+ * Phase 12 / 12.1 — secret handling for email credentials and PII-safe lookups.
  *
- * Two independent concerns:
- *   1. SMTP passwords are ENCRYPTED AT REST with AES-256-GCM using a key from
- *      EMAIL_ENCRYPTION_KEY. We REFUSE to encrypt (and therefore to save a
- *      password) when the key is absent or malformed — the caller surfaces
- *      "email not configured" rather than ever storing a plaintext secret.
+ * Three concerns:
+ *   1. SMTP passwords are ENCRYPTED AT REST with AES-256-GCM, bound to their
+ *      context with Associated Data (shop id + a fixed purpose) and a version
+ *      byte (Q4a). We REFUSE to encrypt when EMAIL_ENCRYPTION_KEY is absent.
  *   2. Shopper emails are looked up / deduped / suppressed / redacted by a KEYED
- *      hash (HMAC-SHA256) so the plaintext never has to be queried on. The hash
- *      key (RESTOCK_HASH_KEY, falling back to SHOPIFY_API_SECRET) is always
- *      available, so collecting subscriptions does NOT depend on the (optional)
- *      email-encryption key.
+ *      hash (HMAC-SHA256). The key is a PER-SHOP random PEPPER (Q3), generated
+ *      lazily under RLS and stored in restock_hash_pepper — NOT SHOPIFY_API_SECRET
+ *      (rotating that secret would orphan every stored email_hash).
+ *   3. Confirm / unsubscribe TOKENS are HMAC'd with the app signing secret
+ *      (SHOPIFY_API_SECRET, a required env), independent of the email pepper.
  *
- * No key or secret is ever logged or returned to a client.
+ * No key, pepper or secret is ever logged or returned to a client.
  */
 
 export class EncryptionKeyMissingError extends Error {
-  constructor() {
-    super("EMAIL_ENCRYPTION_KEY is not configured");
-    this.name = "EncryptionKeyMissingError";
-  }
+  constructor() { super("EMAIL_ENCRYPTION_KEY is not configured"); this.name = "EncryptionKeyMissingError"; }
 }
 export class DecryptionError extends Error {
-  constructor() {
-    super("failed to decrypt secret");
-    this.name = "DecryptionError";
-  }
+  constructor() { super("failed to decrypt secret"); this.name = "DecryptionError"; }
 }
 
 const IV_BYTES = 12;
 const TAG_BYTES = 16;
+const VERSION = 1; // ciphertext format version byte (Q4a)
 
-/** Parse the 32-byte AES key from env (64-hex or base64). Returns null if the
- * env var is absent or not exactly 32 bytes — callers treat null as "no key". */
+/** Parse the 32-byte AES key from env (64-hex or base64). Null when absent/invalid. */
 function loadKey(): Buffer | null {
   const raw = process.env.EMAIL_ENCRYPTION_KEY;
   if (!raw || raw.length === 0) return null;
   let buf: Buffer | null = null;
   if (/^[0-9a-fA-F]{64}$/.test(raw)) buf = Buffer.from(raw, "hex");
-  else {
-    try {
-      const b = Buffer.from(raw, "base64");
-      if (b.length === 32) buf = b;
-    } catch { buf = null; }
-  }
+  else { try { const b = Buffer.from(raw, "base64"); if (b.length === 32) buf = b; } catch { buf = null; } }
   return buf && buf.length === 32 ? buf : null;
 }
 
-/** Whether a usable email-encryption key is configured. */
-export function hasEncryptionKey(): boolean {
-  return loadKey() !== null;
+export function hasEncryptionKey(): boolean { return loadKey() !== null; }
+
+/** The Associated Data that binds a ciphertext to its shop + purpose, so a
+ * ciphertext copied into another shop's row fails to decrypt (Q4a). */
+export function passwordAad(shopId: string): Buffer {
+  return Buffer.from(`${shopId}:email_setting.password`, "utf8");
 }
 
-/** Encrypt a UTF-8 plaintext → base64(iv||tag||ciphertext). Throws
- * EncryptionKeyMissingError when no key is configured (so a password is never
- * stored unencrypted). */
-export function encryptSecret(plaintext: string): string {
+/** Encrypt a UTF-8 plaintext → base64(version(1) || iv(12) || tag(16) || ct),
+ * authenticated with `aad`. Throws EncryptionKeyMissingError without a key. */
+export function encryptSecret(plaintext: string, aad: Buffer): string {
   const key = loadKey();
   if (!key) throw new EncryptionKeyMissingError();
   const iv = crypto.randomBytes(IV_BYTES);
   const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  cipher.setAAD(aad);
   const ct = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
   const tag = cipher.getAuthTag();
-  return Buffer.concat([iv, tag, ct]).toString("base64");
+  return Buffer.concat([Buffer.from([VERSION]), iv, tag, ct]).toString("base64");
 }
 
-/** Decrypt base64(iv||tag||ciphertext) → UTF-8. Throws on a missing key or any
- * tamper/format error. Never returns a partial result. */
-export function decryptSecret(stored: string): string {
+/** Decrypt base64(version||iv||tag||ct) → UTF-8, verifying `aad`. Throws on a
+ * missing key, wrong aad, unknown version, or any tamper/format error. */
+export function decryptSecret(stored: string, aad: Buffer): string {
   const key = loadKey();
   if (!key) throw new EncryptionKeyMissingError();
   let raw: Buffer;
-  try {
-    raw = Buffer.from(stored, "base64");
-  } catch {
-    throw new DecryptionError();
-  }
-  if (raw.length < IV_BYTES + TAG_BYTES + 1) throw new DecryptionError();
-  const iv = raw.subarray(0, IV_BYTES);
-  const tag = raw.subarray(IV_BYTES, IV_BYTES + TAG_BYTES);
-  const ct = raw.subarray(IV_BYTES + TAG_BYTES);
+  try { raw = Buffer.from(stored, "base64"); } catch { throw new DecryptionError(); }
+  if (raw.length < 1 + IV_BYTES + TAG_BYTES + 1) throw new DecryptionError();
+  if (raw[0] !== VERSION) throw new DecryptionError();
+  const iv = raw.subarray(1, 1 + IV_BYTES);
+  const tag = raw.subarray(1 + IV_BYTES, 1 + IV_BYTES + TAG_BYTES);
+  const ct = raw.subarray(1 + IV_BYTES + TAG_BYTES);
   try {
     const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAAD(aad);
     decipher.setAuthTag(tag);
     return Buffer.concat([decipher.update(ct), decipher.final()]).toString("utf8");
-  } catch {
-    throw new DecryptionError();
-  }
+  } catch { throw new DecryptionError(); }
 }
 
-/** The keyed-hash key. Always available in a running server (SHOPIFY_API_SECRET
- * is required env); RESTOCK_HASH_KEY overrides it so the email-lookup hash can
- * be rotated independently. */
-function hashKey(): string {
-  const k = process.env.RESTOCK_HASH_KEY || process.env.SHOPIFY_API_SECRET;
-  if (!k) throw new Error("RESTOCK_HASH_KEY (or SHOPIFY_API_SECRET) is required");
-  return k;
-}
+// ---- per-shop email pepper (Q3) -------------------------------------------
 
-/** Keyed, shop-scoped hash of a NORMALISED email (lowercased/trimmed by the
- * caller). Hex. Used for dedupe/suppression/redaction lookups without querying
- * on the plaintext. Shop-scoped so the same address in two shops never collides
- * across tenants. */
-export function emailHash(shopId: string, normalizedEmail: string): string {
-  return crypto.createHmac("sha256", hashKey())
-    .update(`${shopId}:${normalizedEmail}`)
-    .digest("hex");
-}
-
-/** A random, URL-safe, unguessable token (e.g. the single-use confirm token). */
-export function generateToken(): string {
-  return crypto.randomBytes(32).toString("base64url");
+/**
+ * Obtain this shop's email-hash pepper, creating it lazily on first use. Must be
+ * called inside the shop's RLS/tenant context (the exec is shop-scoped). The
+ * INSERT ... ON CONFLICT DO NOTHING + SELECT is race-safe: two concurrent
+ * first-use requests converge on the ONE stored pepper. Returns 64 hex chars.
+ */
+export async function getShopPepper(exec: Exec, shopId: string): Promise<string> {
+  const candidate = crypto.randomBytes(32).toString("hex");
+  await exec.run(
+    `INSERT INTO restock_hash_pepper (shop_id, pepper) VALUES ($1::uuid, $2)
+     ON CONFLICT (shop_id) DO NOTHING`,
+    [shopId, candidate],
+  );
+  const rows = await exec.rows<{ pepper: string }>(
+    `SELECT pepper FROM restock_hash_pepper WHERE shop_id=$1::uuid`, [shopId],
+  );
+  if (!rows[0]) throw new Error("pepper unavailable"); // RLS context missing
+  return rows[0].pepper;
 }
 
 /**
- * A keyed, deterministic, unguessable unsubscribe token for a subscription.
- * Deterministic (from the subscription id + server key) so it can be
- * reconstructed to embed in every outgoing email WITHOUT storing the raw token;
- * unguessable without the key. Only its hash (hashToken) is persisted. */
-export function deriveUnsubToken(shopId: string, subscriptionId: string): string {
-  return crypto.createHmac("sha256", hashKey())
-    .update(`unsub:${shopId}:${subscriptionId}`)
-    .digest("base64url");
+ * Keyed, shop-scoped hash of a NORMALISED email, using the per-shop pepper as
+ * the HMAC key. Deterministic for a given (pepper, shop, email); independent of
+ * SHOPIFY_API_SECRET, so rotating the app secret never orphans stored hashes.
+ */
+export function emailHash(pepper: string, shopId: string, normalizedEmail: string): string {
+  return crypto.createHmac("sha256", pepper).update(`${shopId}:${normalizedEmail}`).digest("hex");
 }
 
-/** Keyed hash of a raw token, for at-rest storage. Verified in constant time
- * via verifyToken. */
+// ---- confirm / unsubscribe tokens (app signing secret) --------------------
+
+function tokenKey(): string {
+  const k = process.env.SHOPIFY_API_SECRET;
+  if (!k) throw new Error("SHOPIFY_API_SECRET is required");
+  return k;
+}
+
+/** A random, URL-safe, unguessable token (the single-use confirm token). */
+export function generateToken(): string { return crypto.randomBytes(32).toString("base64url"); }
+
+/** A keyed, deterministic, unguessable unsubscribe token for a subscription,
+ * reconstructable without storage; only its hash is persisted. */
+export function deriveUnsubToken(shopId: string, subscriptionId: string): string {
+  return crypto.createHmac("sha256", tokenKey()).update(`unsub:${shopId}:${subscriptionId}`).digest("base64url");
+}
+
+/** Keyed hash of a raw token, for at-rest storage. */
 export function hashToken(rawToken: string): string {
-  return crypto.createHmac("sha256", hashKey()).update(rawToken).digest("hex");
+  return crypto.createHmac("sha256", tokenKey()).update(rawToken).digest("hex");
 }
 
 /** Constant-time comparison of a raw token against a stored hash. */

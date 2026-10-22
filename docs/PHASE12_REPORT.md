@@ -148,6 +148,112 @@ Two of our own guards were mutated, the targeted test shown to fail, then restor
 pg-verified via node-postgres with identical SQL; the production Prisma path is
 exercised by the self-skipping CI cases).
 
+## Phase 12.1 — fix batch (over Phase 12)
+
+Four findings from the Phase 12 review, fixed on top of `a709ff2`. Migration 0015
+is untouched; the schema change ships as the additive, idempotent migration
+`0016_phase12_1_pepper`. No new scope, dependency, extension or SECURITY DEFINER
+function.
+
+### Q1 (HIGH — SMTP SSRF / internal port-scan oracle)
+
+**Failing input:** the merchant-controlled SMTP host/port were used with no
+destination policy. Measured: `127.0.0.1:5432` → connected and hung ~45 s waiting
+for a greeting; `127.0.0.1:5999` (closed) → `ECONNREFUSED` in ~305 ms; `localhost`,
+decimal `2130706433`, hex `0x7f000001` all reached loopback; `no-such-host.invalid`
+→ `ENOTFOUND`. Refused-vs-hang-vs-ENOTFOUND plus the echoed internal `IP:port` was a
+network-mapping oracle, reachable through the public subscribe flow.
+
+**New behaviour** (`app/lib/email/destination.ts`, applied at **save** and
+authoritatively at **every connect**):
+
+| Layer | Rule |
+| --- | --- |
+| Host shape | a conservative DNS hostname (labelled, length-bounded, alpha TLD ≥2, no trailing dot) **or** a canonical IP literal (`net.isIP`). Rejects decimal/hex/octal/short-form IPs, userinfo, port-in-host, brackets, whitespace/control chars |
+| Port | `25`, `465`, `587`, `2525` only (constant) |
+| TLS consistency | `465` ⇒ implicit TLS; credentials ⇒ TLS (STARTTLS or implicit) — never AUTH over `none` |
+| Resolve + pin | at connect, `dns.lookup(all:true)` (injectable); **reject if ANY resolved address is non-public** (IPv4 `0/8,10/8,100.64/10,127/8,169.254/16,172.16/12,192.0.0/24,192.0.2/24,192.168/16,198.18/15,198.51.100/24,203.0.113/24,224/4,240/4`; IPv6 `::,::1,fc00::/7,fe80::/10,ff00::/8,2001:db8::/32` + v4-mapped/NAT64/6to4/Teredo embedded v4); then **connect to the pinned IP**, hostname only for TLS SNI + `rejectUnauthorized:true` — defeats DNS rebinding |
+| Errors | generic categories only (`could not connect`, `TLS failed`, `authentication failed`, `server rejected the message`, `destination not allowed`); **no IP/port/errno/banner** in merchant-visible messages or logs. Policy violations are **permanent** (no retry/no 45 s hang); a short connect/greeting timeout is independent of the whole-send timeout |
+| Dev escape | `SMTP_ALLOW_PRIVATE_HOSTS` for local dev only; **ignored under `NODE_ENV=production`** (one-time warning) |
+
+**Tests (`phase12-ssrf`):** every probe (`127.0.0.1`, `localhost`, `::1`,
+`::ffff:127.0.0.1`, `2130706433`, `0x7f000001`, `169.254.169.254`, `10/172.16/192.168/100.64`,
+a hostname resolving to a private address, one-public+one-private, ports
+`22/80/5432/6379/8080`, AUTH-over-`none`) is **rejected with the injected connect
+NOT called**; a DNS-rebinding resolver (public then private) resolves once and
+pins the public IP; allowed public IP on `25/465/587/2525` connects to the pinned
+IP; error text contains no IP/port/errno. **Mutation:** disabling the pin made 14
+internal-address probes connect — the SSRF tests failed; restored → pass.
+
+### Q2 (HIGH — existence timing oracle + slow SMTP inside a public request)
+
+**Failing input:** `proxy/back-in-stock` awaited the confirmation send inline, only
+when a row was CREATED → new address ~319 ms vs already-subscribed ~3–5 ms (a
+60–100× oracle contradicting "never reveals"), and a slow/hanging SMTP host held
+the request up to ~45 s.
+
+**New behaviour:** **no outbound I/O in the public request.** A freshly created row
+only **enqueues** a pg-boss job (singleton per subscription, payload = opaque shop
+id + subscription id, **never an email**); `subscribe()` no longer returns the raw
+confirm token. The worker (`send.server.ts`) loads the row, mints a **fresh** confirm
+token (stores only its hash + 7-day expiry; the raw token lives only in the email),
+sends with the retry/permanent-transient handling, is **exactly-once** via
+`confirm_sent_at` (a replay sends nothing), and never mails an already-confirmed /
+suppressed / expired row. A **deterministic response-time floor** (`RESPONSE_FLOOR_MS`
+= 150 ms, a plain timer — no randomness) pads every outcome of the subscribe route,
+and the confirm + unsubscribe routes, so the sub-millisecond "enqueued vs exists"
+difference is masked. **Residual:** the floor never shortens a response and does not
+hide gross DB contention; it masks the cheap-outcome difference.
+
+**Before/after (request path):** inline send — new ≈ 319 ms, existing ≈ 3 ms (Δ ≈
+316 ms). Async + floor — new ≈ 150 ms, existing ≈ 150 ms (Δ < 60 ms in the test,
+typically a few ms). **Tests (`phase12-async`):** new/existing/… outcomes all land
+at ~the floor and differ by < 60 ms; the created outcome enqueues exactly one job,
+"exists" enqueues none; the worker job delivers exactly one and a replay sends
+nothing; a transient failure leaves `confirm_sent_at` null (retryable); a slow
+(250 ms) provider delays only the job, not the request path. **Mutation:**
+reintroducing an inline send in the request path made new−existing ≈ 260 ms — the
+equalisation test failed; restored → pass.
+
+### Q3 (MEDIUM — email-hash key rotation)
+
+**Failing input:** the email-lookup HMAC fell back to `SHOPIFY_API_SECRET`; rotating
+that secret would orphan every stored `email_hash` (dedupe fails, suppression stops
+working, `customers/redact` can't find rows).
+
+**New behaviour:** a **per-shop random pepper** (32 bytes, `restock_hash_pepper`, a
+tenant table with RLS ENABLED+FORCED, `app_runtime` grants) keys that shop's email
+hashes. It is generated lazily on first use under RLS with a **race-safe**
+`INSERT … ON CONFLICT DO NOTHING` + `SELECT` (two concurrent first-use requests
+converge on one pepper), never returned/logged/exported, and **erased on
+`shop/redact` + uninstall**. The `SHOPIFY_API_SECRET` fallback is removed from email
+hashing (confirm/unsubscribe tokens still use the app secret, independent of the
+pepper). All lookups (subscribe dedupe, suppression, send-time, `data_request`,
+`redact`, admin search, delete-all) obtain the pepper in-tenant. **Tests
+(`phase12-privacy` Q3):** rotating `SHOPIFY_API_SECRET` leaves hashes unchanged
+(dedupe still sees "exists"); two shops' hashes differ; concurrent first-use → one
+pepper; pepper erased on redact; RLS cross-shop on the new table.
+
+### Q4 (LOW)
+
+(a) The AES-256-GCM ciphertext is now **bound to its context** with Associated Data
+(`<shopId>:email_setting.password`) and a **version byte** (clean v1 format; no
+legacy ciphertext exists). Decrypting a ciphertext copied into another shop's row
+fails (`phase12-units`, `phase12-privacy`). (b) The admin send-test cooldown moved
+from an in-memory per-process `Map` to the database (`email_setting.last_test_email_at`,
+stamped atomically by `claimSendTest`), so it holds across instances/restarts.
+
+### Gates
+
+`typecheck`, `build`, `worker:build`, locale-parity clean. Full suite **630 passed |
+13 skipped** (up from the Phase 12 baseline **587 | 13**; +43 tests across two new
+files — `phase12-ssrf` (32), `phase12-async` (6) — plus reworked units/engine/
+privacy; 13 skips unchanged; **none weakened**). Existing tests that relied on the
+inline send or a loopback SMTP host were updated to the async-job / injected-
+resolver path (noted explicitly): `phase12-smtp` now injects a resolver returning a
+public IP and uses TLS for the AUTH paths; the subscribe→confirm lifecycle, restock
+`beforeEach`, and GDPR tests obtain the confirm token from the worker-sent email.
+
 ## Next step
 
 Awaiting independent verification + the live-Prisma GitHub Actions run. Phase 13 is
@@ -155,5 +261,5 @@ Awaiting independent verification + the live-Prisma GitHub Actions run. Phase 13
 
 ## STATUS
 
-PHASE 12 IMPLEMENTED & PG-VERIFIED (587 passed | 13 skipped; Phase 11.1 baseline
-511 | 13, none weakened). LIVE-PRISMA CONFIRMATION PENDING. PHASE 13 NOT STARTED.
+PHASE 12.1 IMPLEMENTED & PG-VERIFIED (630 passed | 13 skipped; Phase 12 baseline
+587 | 13, none weakened). LIVE-PRISMA CONFIRMATION PENDING. PHASE 13 NOT STARTED.

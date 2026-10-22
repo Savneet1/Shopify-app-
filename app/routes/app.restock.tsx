@@ -3,7 +3,8 @@ import { Form, useLoaderData, useActionData, useNavigation } from "react-router"
 import { TitleBar } from "@shopify/app-bridge-react";
 import { authenticate } from "~/shopify.server";
 import { resolveShopId, withShopExec } from "~/lib/tenant.server";
-import { loadEmailSettingsView, saveEmailSettings } from "~/lib/email/settings";
+import { loadEmailSettingsView, saveEmailSettings, claimSendTest } from "~/lib/email/settings";
+import { DestinationPolicyError } from "~/lib/email/destination";
 import { getEmailProvider } from "~/lib/email/factory";
 import { EncryptionKeyMissingError } from "~/lib/crypto/secret.server";
 import { loadRestockSettings, saveRestockSettings, MAX_NOTIFIED_RETENTION_DAYS } from "~/lib/restock/settings";
@@ -24,10 +25,6 @@ import {
  * CRUD, and retention settings. Emails are shown MASKED. CSV export is the
  * sibling resource route (app.restock.export).
  */
-
-// Simple per-shop send-test rate limit (in-memory; best-effort).
-const testSendAt = new Map<string, number>();
-const TEST_COOLDOWN_MS = 60_000;
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -68,11 +65,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         return { ok: true, msg: "Email settings saved." };
       }
       case "send-test": {
-        const last = testSendAt.get(shopId) ?? 0;
-        if (Date.now() - last < TEST_COOLDOWN_MS) return { error: "Please wait a minute between test emails." };
+        // Q4(b): the cooldown is DB-backed (claimSendTest stamps last_test_email_at
+        // atomically) so it holds across instances/restarts, not a per-process Map.
         const res = await withShopExec(shopId, async (e) => {
           const view = await loadEmailSettingsView(e, shopId);
           if (!view.configured || !view.fromEmail) return { error: "Email is not fully configured." };
+          if (!(await claimSendTest(e, shopId))) return { error: "Please wait a minute between test emails." };
           const { provider } = await getEmailProvider(e, shopId);
           await provider.send({
             to: view.fromEmail, // own shop's configured address only
@@ -83,7 +81,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           return { ok: true };
         });
         if ("error" in res) return res;
-        testSendAt.set(shopId, Date.now());
         return { ok: true, msg: "Test email sent to your configured From address." };
       }
       case "save-restock-settings": {
@@ -144,6 +141,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   } catch (err) {
     if (err instanceof EncryptionKeyMissingError) {
       return { error: "Cannot save a password: the server email-encryption key (EMAIL_ENCRYPTION_KEY) is not configured. Other settings were not saved." };
+    }
+    if (err instanceof DestinationPolicyError) {
+      return { error: `SMTP settings not saved: ${err.message}. Use a public mail host with port 25, 465, 587 or 2525 (465 requires implicit TLS; credentials require TLS).` };
     }
     return { error: err instanceof Error ? err.message : "failed" };
   }

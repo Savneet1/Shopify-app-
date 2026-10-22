@@ -1,5 +1,5 @@
 import type { Exec } from "~/lib/db/executor";
-import { emailHash } from "~/lib/crypto/secret.server";
+import { emailHash, getShopPepper } from "~/lib/crypto/secret.server";
 import { normalizeEmail, maskEmail } from "./email";
 
 /**
@@ -59,7 +59,8 @@ export async function listSubscriptions(
   if (opts.emailQuery) {
     const { email, valid } = normalizeEmail(opts.emailQuery);
     if (!valid || !email) return []; // invalid query → no rows (never leaks)
-    params.push(emailHash(shopId, email));
+    const pepper = await getShopPepper(exec, shopId);
+    params.push(emailHash(pepper, shopId, email));
     where += ` AND email_hash=$${params.length}`;
   }
   params.push(limit);
@@ -93,7 +94,8 @@ export async function deleteSubscription(exec: Exec, shopId: string, id: string)
 export async function deleteAllForEmail(exec: Exec, shopId: string, rawEmail: string): Promise<number> {
   const { email, valid } = normalizeEmail(rawEmail);
   if (!valid || !email) return 0;
-  const hash = emailHash(shopId, email);
+  const pepper = await getShopPepper(exec, shopId);
+  const hash = emailHash(pepper, shopId, email);
   const n = await exec.run(
     `DELETE FROM back_in_stock_subscription WHERE shop_id=$1::uuid AND email_hash=$2`,
     [shopId, hash],

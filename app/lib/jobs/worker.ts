@@ -15,6 +15,7 @@ import {
 import { enqueueFullSync, enqueueRestockDrain } from "./queue";
 import { runReconciliationTick, runSignalRetention, runAnalyticsPartitionMaintenance, runRestockMaintenance, selectInstalledShops } from "./maintenance";
 import { runRestockDrainForShop } from "~/lib/restock/drain.server";
+import { runRestockConfirm } from "~/lib/restock/send.server";
 import { prismaRootExec } from "~/lib/db/root-exec.server";
 import { logger } from "~/lib/logger.server";
 
@@ -69,6 +70,16 @@ export async function startWorker(): Promise<PgBoss> {
     for (const job of jobs) {
       const r = await runRestockDrainForShop(job.data.shopId);
       logger.info({ shopId: job.data.shopId, ...r }, "restock drain");
+    }
+  });
+
+  // Phase 12.1 Q2: async double-opt-in confirmation send (singleton per sub). A
+  // throw here (transient) lets pg-boss retry; a worker failure never affects the
+  // already-returned public HTTP response. Payload carries only opaque ids.
+  await boss.work<{ shopId: string; subscriptionId: string }>(QUEUE.restockConfirm, { batchSize: 10 }, async (jobs) => {
+    for (const job of jobs) {
+      const r = await runRestockConfirm(job.data.shopId, job.data.subscriptionId);
+      logger.info({ shopId: job.data.shopId, sent: r.sent, reason: r.reason }, "restock confirm");
     }
   });
 

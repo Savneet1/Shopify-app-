@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   encryptSecret, decryptSecret, hasEncryptionKey, emailHash, generateToken,
-  deriveUnsubToken, hashToken, verifyToken, EncryptionKeyMissingError, DecryptionError,
+  deriveUnsubToken, hashToken, verifyToken, passwordAad,
+  EncryptionKeyMissingError, DecryptionError,
 } from "~/lib/crypto/secret.server";
 import { normalizeEmail, maskEmail } from "~/lib/restock/email";
 import { escapeHtml, normalizeLocale, confirmEmail, restockEmail } from "~/lib/restock/templates";
@@ -11,38 +12,53 @@ import { scheduleApplies, ruleMatchesProduct, preorderForProduct, type PreorderR
 
 /* Phase 12.8 — pure unit tests. No DB. */
 
-describe("Phase 12 — AES-256-GCM secret encryption", () => {
+describe("Phase 12 — AES-256-GCM secret encryption (AAD-bound, versioned)", () => {
+  const aad = passwordAad("shop-1");
   it("round-trips a password", () => {
-    const ct = encryptSecret("hunter2!");
+    const ct = encryptSecret("hunter2!", aad);
     expect(ct).not.toContain("hunter2");           // never plaintext
-    expect(decryptSecret(ct)).toBe("hunter2!");
+    expect(decryptSecret(ct, aad)).toBe("hunter2!");
     // non-deterministic IV → different ciphertext each time
-    expect(encryptSecret("hunter2!")).not.toBe(ct);
+    expect(encryptSecret("hunter2!", aad)).not.toBe(ct);
+    // versioned format: first byte is the version (0x01)
+    expect(Buffer.from(ct, "base64")[0]).toBe(1);
+  });
+  it("Q4a: a ciphertext copied into another shop's context fails to decrypt", () => {
+    const ct = encryptSecret("super-secret", passwordAad("shop-A"));
+    expect(decryptSecret(ct, passwordAad("shop-A"))).toBe("super-secret");
+    expect(() => decryptSecret(ct, passwordAad("shop-B"))).toThrow(DecryptionError);
   });
   it("rejects tampered ciphertext (GCM auth tag)", () => {
-    const ct = encryptSecret("secret");
+    const ct = encryptSecret("secret", aad);
     const raw = Buffer.from(ct, "base64"); raw[raw.length - 1] ^= 0xff;
-    expect(() => decryptSecret(raw.toString("base64"))).toThrow(DecryptionError);
-    expect(() => decryptSecret("not-base64-@@@")).toThrow(DecryptionError);
-    expect(() => decryptSecret("")).toThrow(DecryptionError);
+    expect(() => decryptSecret(raw.toString("base64"), aad)).toThrow(DecryptionError);
+    expect(() => decryptSecret("not-base64-@@@", aad)).toThrow(DecryptionError);
+    expect(() => decryptSecret("", aad)).toThrow(DecryptionError);
   });
   it("refuses to encrypt when the key is absent (never stores plaintext)", () => {
     const saved = process.env.EMAIL_ENCRYPTION_KEY;
     try {
       delete process.env.EMAIL_ENCRYPTION_KEY;
       expect(hasEncryptionKey()).toBe(false);
-      expect(() => encryptSecret("x")).toThrow(EncryptionKeyMissingError);
+      expect(() => encryptSecret("x", aad)).toThrow(EncryptionKeyMissingError);
     } finally { process.env.EMAIL_ENCRYPTION_KEY = saved; }
     expect(hasEncryptionKey()).toBe(true);
   });
 });
 
-describe("Phase 12 — keyed email hash + tokens", () => {
-  it("emailHash is deterministic and shop-scoped", () => {
-    const a = emailHash("shop-1", "a@b.com");
-    expect(a).toBe(emailHash("shop-1", "a@b.com"));       // deterministic
-    expect(a).not.toBe(emailHash("shop-2", "a@b.com"));   // shop-scoped
+describe("Phase 12.1 — pepper-keyed email hash + tokens", () => {
+  const PEPPER_A = "a".repeat(64);
+  const PEPPER_B = "b".repeat(64);
+  it("emailHash is deterministic per (pepper, shop) and independent of SHOPIFY_API_SECRET", () => {
+    const a = emailHash(PEPPER_A, "shop-1", "a@b.com");
+    expect(a).toBe(emailHash(PEPPER_A, "shop-1", "a@b.com"));       // deterministic
+    expect(a).not.toBe(emailHash(PEPPER_A, "shop-2", "a@b.com"));   // shop-scoped
+    expect(a).not.toBe(emailHash(PEPPER_B, "shop-1", "a@b.com"));   // different pepper
     expect(/^[0-9a-f]{64}$/.test(a)).toBe(true);
+    // Rotating the app secret must NOT change the hash (Q3).
+    const saved = process.env.SHOPIFY_API_SECRET;
+    try { process.env.SHOPIFY_API_SECRET = "rotated-" + Date.now(); expect(emailHash(PEPPER_A, "shop-1", "a@b.com")).toBe(a); }
+    finally { process.env.SHOPIFY_API_SECRET = saved; }
   });
   it("generateToken is unguessable + url-safe; hashToken/verifyToken round-trip", () => {
     const t = generateToken();

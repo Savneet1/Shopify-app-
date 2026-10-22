@@ -214,6 +214,40 @@ CRUD; retention & caps. CSV export (`/app/restock/export`) reuses the existing
   **theme rendering** of the blocks on a real storefront; precise shop-timezone
   date formatting in the theme (the server stores UTC; the block formats locally).
 
+## Phase 12.1 hardening (migration 0016)
+
+- **SMTP destination policy (anti-SSRF).** The merchant SMTP host/port are
+  validated at save time and authoritatively at every connect
+  (`app/lib/email/destination.ts`): a conservative hostname or canonical IP
+  literal only (no decimal/hex/octal/short-form or userinfo/port-in-host);
+  ports `25/465/587/2525` only; `465` ⇒ implicit TLS; credentials ⇒ TLS. At
+  connect the host is resolved (`dns.lookup all:true`), **rejected if any
+  address is non-public** (private/loopback/link-local/ULA/CGNAT/metadata/doc +
+  IPv4-mapped/NAT64/6to4/Teredo embedded v4), and the connection is made to the
+  **pinned** validated IP with the hostname used only for TLS SNI +
+  `rejectUnauthorized:true` — defeating DNS rebinding. Merchant-visible errors
+  are generic categories with no IP/port/errno/banner. `SMTP_ALLOW_PRIVATE_HOSTS`
+  is a local-dev escape, ignored under `NODE_ENV=production`.
+- **Asynchronous confirmation.** The public subscribe request performs **no
+  outbound I/O**: it enqueues a job (opaque ids only) and the worker mints a
+  fresh confirm token and sends the confirmation (exactly-once via
+  `confirm_sent_at`). A fixed **150 ms response-time floor** masks the
+  new-vs-already-subscribed timing difference; the confirm and unsubscribe routes
+  are floored too. Residual: the floor masks the cheap-outcome difference, never
+  shortens a response, and does not hide gross DB contention.
+- **Per-shop email pepper.** Shopper-email hashing is keyed by a per-shop random
+  pepper (`restock_hash_pepper`, tenant table, RLS enabled+forced), generated
+  lazily and race-safely under RLS, never returned/logged/exported, erased on
+  `shop/redact`+uninstall. Rotating `SHOPIFY_API_SECRET` no longer orphans stored
+  hashes (the env fallback for the email hash is removed).
+- **AES AAD + versioned format.** SMTP password ciphertext is bound to its shop +
+  purpose with Associated Data and a version byte, so a ciphertext copied into
+  another shop's row fails to decrypt. The admin send-test cooldown is DB-backed.
+
+**Requires Verification (12.1):** real mail-provider behaviour and TLS on the host
+(certificate chains, STARTTLS support, outbound SMTP egress on `25/465/587/2525`),
+and live App-Proxy/theme behaviour — none are claimed verified from this codebase.
+
 ## Email deliverability notes
 
 The app sends through the **merchant's own SMTP server** with their credentials.

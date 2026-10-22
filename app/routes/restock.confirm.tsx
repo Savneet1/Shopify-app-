@@ -1,6 +1,7 @@
 import type { LoaderFunctionArgs } from "react-router";
 import { withShopExec } from "~/lib/tenant.server";
 import { confirmSubscription } from "~/lib/restock/subscriptions";
+import { RESPONSE_FLOOR_MS, applyResponseFloor } from "~/lib/restock/timing";
 
 /**
  * Phase 12.2 — public double-opt-in CONFIRM link (clicked from the email; no
@@ -26,11 +27,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const t = url.searchParams.get("t") ?? "";
   // Generic message regardless of outcome (never reveals existence).
   const generic = "If your request was valid, your back-in-stock alert is now confirmed. You can close this page.";
-  if (!UUID.test(s) || !UUID.test(sid) || t.length === 0 || t.length > 512) return page(generic);
+  const started = Date.now();
+  if (!UUID.test(s) || !UUID.test(sid) || t.length === 0 || t.length > 512) {
+    // Pad even the malformed-input path so timing never distinguishes outcomes.
+    await applyResponseFloor(started, RESPONSE_FLOOR_MS);
+    return page(generic);
+  }
   try {
     await withShopExec(sid, (e) => confirmSubscription(e, sid, s, t));
   } catch {
     /* never surface an error */
   }
+  // Equalise timing across unknown / used / expired / valid tokens.
+  await applyResponseFloor(started, RESPONSE_FLOOR_MS);
   return page(generic);
 };

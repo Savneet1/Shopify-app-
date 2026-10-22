@@ -1,7 +1,7 @@
 import type { Exec } from "~/lib/db/executor";
 import { normalizeEmail } from "./email";
 import { randomUUID } from "node:crypto";
-import { emailHash, generateToken, deriveUnsubToken, hashToken, verifyToken } from "~/lib/crypto/secret.server";
+import { emailHash, getShopPepper, deriveUnsubToken, hashToken, verifyToken } from "~/lib/crypto/secret.server";
 import { loadRestockSettings } from "./settings";
 
 /**
@@ -40,11 +40,6 @@ export interface SubscribeInput {
 export interface SubscribeResult {
   outcome: SubscribeOutcome;
   subscriptionId?: string;
-  /** Raw confirm token — present ONLY for a freshly created row, for the caller
-   * to email. Never stored in plaintext, never returned to the storefront. */
-  confirmToken?: string;
-  email?: string;
-  locale?: string;
 }
 
 interface Subscribable { productId: string; variantId: string | null; }
@@ -122,7 +117,9 @@ export async function subscribe(
   const consentTextVersion = typeof input.consentTextVersion === "string"
     ? input.consentTextVersion.slice(0, 50) : "v1";
 
-  const hash = emailHash(shopId, email);
+  // Per-shop pepper (Q3) keys the email hash; obtained inside the tenant context.
+  const pepper = await getShopPepper(exec, shopId);
+  const hash = emailHash(pepper, shopId, email);
 
   // ---- suppression (never re-mail an unsubscribed/bounced address) ----
   if (await isSuppressed(exec, shopId, hash)) return { outcome: "suppressed" };
@@ -150,29 +147,29 @@ export async function subscribe(
   // ---- create (dedupe via unique index; existing row → identical response) ----
   // The id is generated app-side so the deterministic unsubscribe token (keyed
   // HMAC of the id) can be hashed and stored in the SAME insert (one query).
+  // Q2: NO confirm token is minted here and NO email is sent in this (public)
+  // request. The row is 'pending' with no confirm token; the worker mints a
+  // fresh token, stores its hash+expiry, and sends the confirmation email.
   const subscriptionId = randomUUID();
-  const confirmToken = generateToken();
   const unsubTokenHash = hashToken(deriveUnsubToken(shopId, subscriptionId));
   const variantKey = variantGid ?? "";
-  const confirmExpires = new Date(now.getTime() + CONFIRM_TTL_HOURS * 3600_000).toISOString();
 
   const inserted = await exec.rows<{ id: string }>(
     `INSERT INTO back_in_stock_subscription
        (id, shop_id, product_id, shopify_product_gid, variant_id, variant_gid, variant_key,
         email, email_hash, locale, status, consented_at, consent_text_version, source,
-        confirm_token_hash, confirm_expires_at, unsubscribe_token_hash, created_at, updated_at)
-     VALUES ($1::uuid,$2::uuid,$3::uuid,$4,$5::uuid,$6,$7,$8,$9,$10,'pending',$11::timestamptz,$12,$13,$14,$15::timestamptz,$16, now(), now())
+        unsubscribe_token_hash, created_at, updated_at)
+     VALUES ($1::uuid,$2::uuid,$3::uuid,$4,$5::uuid,$6,$7,$8,$9,$10,'pending',$11::timestamptz,$12,$13,$14, now(), now())
      ON CONFLICT (shop_id, email_hash, shopify_product_gid, variant_key) DO NOTHING
      RETURNING id`,
     [
       subscriptionId, shopId, sub.productId, productGid, sub.variantId, variantGid, variantKey,
-      email, hash, locale, now.toISOString(), consentTextVersion, source,
-      hashToken(confirmToken), confirmExpires, unsubTokenHash,
+      email, hash, locale, now.toISOString(), consentTextVersion, source, unsubTokenHash,
     ],
   );
 
   if (inserted.length === 0) return { outcome: "exists" }; // dedupe: do not reveal, do not resend
-  return { outcome: "created", subscriptionId: inserted[0].id, confirmToken, email, locale };
+  return { outcome: "created", subscriptionId: inserted[0].id };
 }
 
 /** Confirm a pending subscription via its id + raw confirm token. Generic

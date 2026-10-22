@@ -1,6 +1,7 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { withShopExec } from "~/lib/tenant.server";
 import { unsubscribe } from "~/lib/restock/subscriptions";
+import { RESPONSE_FLOOR_MS, applyResponseFloor } from "~/lib/restock/timing";
 
 /**
  * Phase 12.3 — public UNSUBSCRIBE link + one-click endpoint (clicked from the
@@ -17,12 +18,18 @@ async function doUnsub(request: Request): Promise<void> {
   const s = url.searchParams.get("s") ?? "";
   const sid = url.searchParams.get("sid") ?? "";
   const t = url.searchParams.get("t") ?? "";
-  if (!UUID.test(s) || !UUID.test(sid) || t.length === 0 || t.length > 512) return;
+  const started = Date.now();
+  if (!UUID.test(s) || !UUID.test(sid) || t.length === 0 || t.length > 512) {
+    await applyResponseFloor(started, RESPONSE_FLOOR_MS);
+    return;
+  }
   try {
     await withShopExec(sid, (e) => unsubscribe(e, sid, s, t));
   } catch {
     /* never surface an error */
   }
+  // Equalise timing across unknown / already-unsubscribed / valid tokens.
+  await applyResponseFloor(started, RESPONSE_FLOOR_MS);
 }
 
 function page(message: string): Response {

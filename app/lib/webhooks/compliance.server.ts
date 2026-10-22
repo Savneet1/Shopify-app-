@@ -2,6 +2,21 @@ import { withShop, type TenantTx } from "~/lib/tenant.server";
 import { logger } from "~/lib/logger.server";
 import { emailHash } from "~/lib/crypto/secret.server";
 import { normalizeEmail } from "~/lib/restock/email";
+import crypto from "node:crypto";
+
+/** Q3: get-or-create this shop's email-hash pepper via the tenant tx (race-safe:
+ * INSERT ... ON CONFLICT DO NOTHING then SELECT → one pepper). */
+async function getPepper(tx: TenantTx, shopId: string): Promise<string> {
+  const candidate = crypto.randomBytes(32).toString("hex");
+  await tx.$executeRawUnsafe(
+    `INSERT INTO restock_hash_pepper (shop_id, pepper) VALUES ($1::uuid, $2) ON CONFLICT (shop_id) DO NOTHING`,
+    shopId, candidate,
+  );
+  const rows = (await tx.$queryRawUnsafe(
+    `SELECT pepper FROM restock_hash_pepper WHERE shop_id=$1::uuid`, shopId,
+  )) as Array<{ pepper: string }>;
+  return rows[0].pepper;
+}
 
 export type ComplianceTopic =
   | "customers/data_request"
@@ -37,7 +52,10 @@ export async function processCompliance(input: ComplianceInput): Promise<void> {
     // Phase 12: this app now stores shopper emails (back-in-stock). The request
     // email is normalised and matched by its KEYED HASH — never by plaintext.
     const norm = normalizeEmail(input.customerEmail);
-    const hash = norm.valid && norm.email ? emailHash(shopId, norm.email) : null;
+    // Q3: the email hash is keyed by this shop's pepper (obtained in-tenant),
+    // not SHOPIFY_API_SECRET, so it matches the stored hashes after a secret
+    // rotation.
+    const hash = norm.valid && norm.email ? emailHash(await getPepper(tx, shopId), shopId, norm.email) : null;
 
     let status: string = topic === "shop/redact" ? "processing" : "no_data";
     let held = 0;
@@ -124,6 +142,7 @@ async function eraseShopData(tx: TenantTx, shopId: string): Promise<void> {
   await tx.$executeRawUnsafe(`DELETE FROM preorder_rule WHERE shop_id = $1::uuid`, shopId);
   await tx.$executeRawUnsafe(`DELETE FROM countdown_rule WHERE shop_id = $1::uuid`, shopId);
   await tx.$executeRawUnsafe(`DELETE FROM restock_setting WHERE shop_id = $1::uuid`, shopId);
+  await tx.$executeRawUnsafe(`DELETE FROM restock_hash_pepper WHERE shop_id = $1::uuid`, shopId);
   await tx.$executeRawUnsafe(`DELETE FROM email_setting WHERE shop_id = $1::uuid`, shopId);
   // webhook_receipt + data_deletion_request are audit records; retained.
   await tx.shop.update({
