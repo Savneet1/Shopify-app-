@@ -5,7 +5,7 @@ import {
   purgeOldAnalyticsEvents, purgeOldAnalyticsRollup, maintainAnalyticsPartitions,
   type PartitionMaintenanceResult,
 } from "~/lib/analytics/retention";
-import { purgeRestockData, type RestockMaintenanceResult } from "~/lib/restock/retention";
+import { purgeRestockData, selectStrandedConfirmations, type RestockMaintenanceResult } from "~/lib/restock/retention";
 
 /**
  * Scheduled reconciliation (G8). A periodic tick enumerates INSTALLED shops
@@ -113,4 +113,26 @@ export async function runRestockMaintenance(
     agg.notificationsPurged += r.notificationsPurged;
   }
   return agg;
+}
+
+/**
+ * Phase 12.2 R5b — re-enqueue stranded double-opt-in confirmations (the enqueue
+ * failed or the process died after the subscription committed). For each
+ * installed shop (RLS-scoped, bounded batch) it selects pending rows with no
+ * confirmation sent and re-enqueues them with the SAME singleton key, so a
+ * re-run never duplicates a job. Returns how many were re-enqueued.
+ */
+export async function runRestockConfirmSweep(
+  rootExec: Exec,
+  runner: <T>(shopId: string, fn: (exec: Exec) => Promise<T>) => Promise<T>,
+  enqueue: (shopId: string, subscriptionId: string) => Promise<unknown>,
+  opts: { now?: Date; batchSize?: number } = {},
+): Promise<number> {
+  const ids = await selectInstalledShops(rootExec);
+  let total = 0;
+  for (const id of ids) {
+    const stranded = await runner(id, (e) => selectStrandedConfirmations(e, id, opts));
+    for (const subId of stranded) { await enqueue(id, subId).catch(() => {}); total++; }
+  }
+  return total;
 }

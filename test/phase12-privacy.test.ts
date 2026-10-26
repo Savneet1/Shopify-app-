@@ -9,7 +9,8 @@ import { createPreorderRule } from "~/lib/preorder/rules";
 import { createCountdownRule } from "~/lib/countdown/rules";
 import { deleteAllForEmail } from "~/lib/restock/admin";
 import { purgeRestockData } from "~/lib/restock/retention";
-import { emailHash, getShopPepper } from "~/lib/crypto/secret.server";
+import { emailHash, getShopPepper, EncryptionKeyMissingError } from "~/lib/crypto/secret.server";
+import { restoreEnv } from "./helpers/env";
 
 const pepperOf = (db: TestDb, shop: string) => db.withShopExec(shop, (e) => getShopPepper(e, shop));
 
@@ -127,10 +128,12 @@ describe("Phase 12.1 — SMTP credentials are encrypted at rest + never returned
     const saved = process.env.EMAIL_ENCRYPTION_KEY;
     try {
       delete process.env.EMAIL_ENCRYPTION_KEY;
-      await expect(db.withShopExec(shop, (e) => saveEmailSettings(e, shop, { host: "h", port: 25, password: "p", fromEmail: "s@e.com" }))).rejects.toThrow();
+      // A VALID destination so the save reaches the encryption step and fails
+      // for the RIGHT reason (missing key), not the destination policy (R1c).
+      await expect(db.withShopExec(shop, (e) => saveEmailSettings(e, shop, { host: "smtp.example.com", port: 587, password: "p", fromEmail: "s@e.com" }))).rejects.toThrow(EncryptionKeyMissingError);
       const n = await db.withShopExec(shop, async (e) => (await e.rows<{ n: number }>("SELECT count(*)::int n FROM email_setting WHERE shop_id=$1::uuid", [shop]))[0].n);
       expect(n).toBe(0);
-    } finally { process.env.EMAIL_ENCRYPTION_KEY = saved; }
+    } finally { restoreEnv("EMAIL_ENCRYPTION_KEY", saved); }
   });
 });
 
@@ -256,7 +259,7 @@ describe("Phase 12.1 Q3 — per-shop email pepper", () => {
     try {
       process.env.SHOPIFY_API_SECRET = "rotated-secret-" + Date.now();
       expect((await db.withShopExec(shopA, (e) => subscribe(e, shopA, { email: "keep@e.com", productGid: G(1), consent: true }))).outcome).toBe("exists");
-    } finally { process.env.SHOPIFY_API_SECRET = saved; }
+    } finally { restoreEnv("SHOPIFY_API_SECRET", saved); }
   });
 
   it("the pepper is erased when the shop's data is erased", async () => {

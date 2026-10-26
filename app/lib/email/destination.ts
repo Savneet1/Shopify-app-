@@ -60,6 +60,18 @@ export function validateDestination(input: DestinationInput): DestinationVerdict
     // decimal (2130706433), hex (0x7f000001), octal, and short IPv4 forms.
     return { ok: false, reason: "destination not allowed" };
   }
+  // R5(a): reject a NON-PUBLIC IP literal at SAVE time (pure, no DNS) so the
+  // merchant gets early feedback — 127.0.0.1, ::1, 10.x, 169.254.169.254, …
+  // (the connect-time guard enforces this too, authoritatively).
+  if (ipVer !== 0 && !isPublicIp(host)) {
+    return { ok: false, reason: "destination not allowed" };
+  }
+  // R5(a): reject obviously-internal hostnames by SYNTAX (no DNS): localhost and
+  // the .localhost / .local / .internal / .localdomain suffixes.
+  const lower = host.toLowerCase();
+  if (lower === "localhost" || /\.(localhost|local|internal|localdomain)$/.test(lower)) {
+    return { ok: false, reason: "destination not allowed" };
+  }
 
   const port = Number(input.port);
   if (!Number.isInteger(port) || !(ALLOWED_PORTS as readonly number[]).includes(port)) {

@@ -17,6 +17,8 @@ export interface SubscribeRequestDeps {
   enqueueConfirm: (shopId: string, subscriptionId: string) => Promise<unknown>;
   startedMs: number;
   floorMs?: number;
+  /** Optional hook for a failed/slow enqueue (logging). The sweeper recovers it. */
+  onEnqueueError?: (err: unknown) => void;
 }
 
 export async function runSubscribeRequest(
@@ -28,7 +30,14 @@ export async function runSubscribeRequest(
       locale: body.locale, consent: body.consent, consentTextVersion: body.consentTextVersion, source: body.source,
     }).catch(() => ({ outcome: "rejected" as const }));
     if (result.outcome === "created" && "subscriptionId" in result && result.subscriptionId) {
-      await deps.enqueueConfirm(shopId, result.subscriptionId).catch(() => {});
+      // Fire-and-forget: the enqueue must NEVER extend the response past the
+      // floor (a slow queue would otherwise reopen a timing signal and hold the
+      // request). If it is slow or fails, the maintenance-tick sweeper
+      // (runRestockConfirmSweep) re-enqueues the stranded row. The subscription
+      // id is already committed, so nothing is lost.
+      void Promise.resolve()
+        .then(() => deps.enqueueConfirm(shopId, (result as { subscriptionId: string }).subscriptionId))
+        .catch((err) => deps.onEnqueueError?.(err));
     }
   }
   await applyResponseFloor(deps.startedMs, deps.floorMs ?? RESPONSE_FLOOR_MS);

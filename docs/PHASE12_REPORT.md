@@ -254,12 +254,84 @@ resolver path (noted explicitly): `phase12-smtp` now injects a resolver returnin
 public IP and uses TLS for the AUTH paths; the subscribe→confirm lifecycle, restock
 `beforeEach`, and GDPR tests obtain the confirm token from the worker-sent email.
 
+## Phase 12.2 — CI-parity fix batch (over Phase 12.1)
+
+The Live-Prisma Check failed on the Phase 12 line (runs #18/#19): `Tests 5 failed`,
+all `EncryptionKeyMissingError: EMAIL_ENCRYPTION_KEY is not configured`
+(`phase12-units` ×4, `phase12-privacy` ×1). Migrations 0013–0016 and the 13
+prisma-integration tests passed live.
+
+**Root cause:** the tests were not hermetic. The build sandbox has a gitignored
+`.env` defining `EMAIL_ENCRYPTION_KEY`, so the AES tests passed locally; CI has no
+`.env`, the workflow's `env:` block did not provide the key, and the key-absent
+save/restore used `process.env.X = saved` (which assigns the string `"undefined"`
+when `saved` is undefined). Reproduced here by scrubbing `.env` and the environment.
+
+**Fix (R1–R4), no schema change required except an additive migration already in
+0016 — none added here):**
+
+- **R1 hermetic tests.** `test/setup.ts` sets a fixed TEST-ONLY `EMAIL_ENCRYPTION_KEY`
+  (64-hex throwaway) when `NODE_ENV=test` and it is unset, so the suite never
+  depends on a developer's `.env`. The buggy `process.env.X = saved` restores were
+  replaced with a `restoreEnv(key, saved)` helper (`delete` when `saved` is
+  `undefined`); all occurrences fixed. The key-absent test still proves the save is
+  refused — it now uses a VALID destination so it fails for the right reason
+  (missing key), asserting `EncryptionKeyMissingError`.
+- **R2 workflow parity.** `live-prisma-check.yml` adds `EMAIL_ENCRYPTION_KEY` as a
+  clearly-labelled CI-only throwaway, so the real worker step has it too. The
+  prisma-integration skip hard-fail and every other check are unchanged.
+- **R3 `npm run test:ci-parity`.** Runs the full suite the way CI does: `.env`
+  ignored (`CI_PARITY=1` makes `test/setup.ts` skip dotenv), in a scrubbed env
+  built from the workflow's `env:` block (parsed from the yml, so the two cannot
+  drift; the four `*DATABASE_URL`s are mapped to the local instance since DB
+  location is infra, and every app secret — notably `EMAIL_ENCRYPTION_KEY` — comes
+  only from the workflow block). A drift-guard test (`ci-parity-guard`) fails if the
+  workflow stops providing a required var. **Demonstrated:** with R1 reverted and no
+  key in the env, `test:ci-parity` reproduced exactly the 5 `EncryptionKeyMissingError`
+  failures (`phase12-units` ×4, `phase12-privacy` ×1); with R1 applied it passes.
+- **R4 archive hygiene.** The deliverable archive is now packaged from **tracked
+  files only** (a fresh `git clone` of the repo, then tar) — it includes `.git` but
+  no `node_modules`, no build output, and **no `.env`** (the previous archive
+  leaked a local `.env`). `.env.example` documents `EMAIL_ENCRYPTION_KEY`; there is
+  no stale `RESTOCK_HASH_KEY` anywhere (removed with the env fallback in 12.1).
+
+**Carry-overs (R5):**
+
+- **R5a save-time destination feedback.** `validateDestination` now rejects, by pure
+  syntax (no DNS), any IP literal for which `isPublicIp()` is false (127.0.0.1, ::1,
+  10.x, 169.254.169.254, …) and the hostnames `localhost` / `*.localhost` / `*.local`
+  / `*.internal` / `*.localdomain` — so the merchant gets an early error, not just at
+  connect time. Tests cover each.
+- **R5b lost-confirmation sweeper.** A pending row whose confirmation never got sent
+  (enqueue failed or the process died after commit) was stranded forever
+  (re-subscribing returns "exists"). A sweeper on the existing maintenance tick
+  (`runRestockConfirmSweep` → `selectStrandedConfirmations`) re-enqueues the confirm
+  job (same singleton key ⇒ no duplicates) for `pending`, `confirm_sent_at IS NULL`
+  rows older than 5 minutes, younger than the 7-day TTL, not suppressed — RLS-scoped,
+  bounded batches, idempotent. The public handler now **fire-and-forgets** the
+  enqueue so it can never extend the response past the 150 ms floor (a slow/failed
+  enqueue is recovered by the sweeper). Tests: selects only genuinely-stranded rows
+  (not sent/confirmed/expired/suppressed/too-fresh); bounded; cross-shop isolated;
+  stops once sent; a 400 ms enqueue no longer changes new-vs-exists response time.
+  **Mutation:** dropping the `confirm_sent_at IS NULL` guard made the sweeper pick a
+  sent row → the test failed; restored → pass.
+
+### Gates
+
+`typecheck`, `build`, `worker:build`, locale-parity clean. Both the normal full
+suite (`npm test`) and `npm run test:ci-parity` report **647 passed | 13 skipped**
+(up from the Phase 12.1 baseline **630 | 13**; +17 tests — `ci-parity-guard` (11),
+`phase12-sweeper` (5), plus the R5a/R5b additions; 13 skips unchanged; **none
+weakened**). From now on `test:ci-parity` is run and reported before a phase is
+declared done.
+
 ## Next step
 
-Awaiting independent verification + the live-Prisma GitHub Actions run. Phase 13 is
-**not** started (no approval).
+Awaiting the re-run of the Live-Prisma GitHub Actions workflow. Phase 13 is **not**
+started (no approval).
 
 ## STATUS
 
-PHASE 12.1 IMPLEMENTED & PG-VERIFIED (630 passed | 13 skipped; Phase 12 baseline
-587 | 13, none weakened). LIVE-PRISMA CONFIRMATION PENDING. PHASE 13 NOT STARTED.
+PHASE 12.2 IMPLEMENTED & PG-VERIFIED (npm test AND npm run test:ci-parity both 647
+passed | 13 skipped; Phase 12.1 baseline 630 | 13, none weakened). LIVE-PRISMA
+CONFIRMATION PENDING. PHASE 13 NOT STARTED.

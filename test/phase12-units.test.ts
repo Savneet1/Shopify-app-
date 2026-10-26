@@ -9,6 +9,7 @@ import { escapeHtml, normalizeLocale, confirmEmail, restockEmail } from "~/lib/r
 import { safeHttpsUrl, unsubscribeUrl, confirmUrl, listUnsubscribeHeaders } from "~/lib/restock/notify";
 import { windowOpen, countdownForTarget, type CountdownRule } from "~/lib/countdown/rules";
 import { scheduleApplies, ruleMatchesProduct, preorderForProduct, type PreorderRule } from "~/lib/preorder/rules";
+import { restoreEnv } from "./helpers/env";
 
 /* Phase 12.8 — pure unit tests. No DB. */
 
@@ -41,7 +42,7 @@ describe("Phase 12 — AES-256-GCM secret encryption (AAD-bound, versioned)", ()
       delete process.env.EMAIL_ENCRYPTION_KEY;
       expect(hasEncryptionKey()).toBe(false);
       expect(() => encryptSecret("x", aad)).toThrow(EncryptionKeyMissingError);
-    } finally { process.env.EMAIL_ENCRYPTION_KEY = saved; }
+    } finally { restoreEnv("EMAIL_ENCRYPTION_KEY", saved); }
     expect(hasEncryptionKey()).toBe(true);
   });
 });
@@ -58,7 +59,7 @@ describe("Phase 12.1 — pepper-keyed email hash + tokens", () => {
     // Rotating the app secret must NOT change the hash (Q3).
     const saved = process.env.SHOPIFY_API_SECRET;
     try { process.env.SHOPIFY_API_SECRET = "rotated-" + Date.now(); expect(emailHash(PEPPER_A, "shop-1", "a@b.com")).toBe(a); }
-    finally { process.env.SHOPIFY_API_SECRET = saved; }
+    finally { restoreEnv("SHOPIFY_API_SECRET", saved); }
   });
   it("generateToken is unguessable + url-safe; hashToken/verifyToken round-trip", () => {
     const t = generateToken();

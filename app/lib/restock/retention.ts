@@ -16,6 +16,34 @@ import { loadRestockSettings, UNCONFIRMED_TTL_DAYS } from "./settings";
 
 export const PENDING_NOTIFICATION_TTL_DAYS = 30;
 export const DEFAULT_RESTOCK_BATCH = 5000;
+/** A pending row with no confirmation sent is "stranded" once older than this. */
+export const STRANDED_CONFIRM_MIN_AGE_MINUTES = 5;
+
+/**
+ * Phase 12.1 Q2 / 12.2 R5b — find back-in-stock rows whose confirmation never
+ * got sent (the enqueue failed or the process died after commit): status
+ * `pending`, `confirm_sent_at IS NULL`, older than 5 minutes (so a just-created
+ * row the live enqueue is still handling is left alone), younger than the 7-day
+ * unconfirmed TTL (an older row is purged, not re-mailed), and NOT suppressed.
+ * RLS-scoped; bounded batch. Returns the subscription ids to re-enqueue (the
+ * caller enqueues with the SAME singleton key, so re-runs create no duplicates).
+ */
+export async function selectStrandedConfirmations(
+  exec: Exec, shopId: string, opts: { now?: Date; batchSize?: number } = {},
+): Promise<string[]> {
+  const now = opts.now ?? new Date();
+  const batch = Math.max(1, Math.floor(opts.batchSize ?? 1000));
+  const rows = await exec.rows<{ id: string }>(
+    `SELECT s.id FROM back_in_stock_subscription s
+     WHERE s.shop_id=$1::uuid AND s.status='pending' AND s.confirm_sent_at IS NULL
+       AND s.created_at < $2::timestamptz - make_interval(mins => ${STRANDED_CONFIRM_MIN_AGE_MINUTES})
+       AND s.created_at > $2::timestamptz - make_interval(days => $3::int)
+       AND NOT EXISTS (SELECT 1 FROM restock_suppression x WHERE x.shop_id=s.shop_id AND x.email_hash=s.email_hash)
+     ORDER BY s.created_at ASC LIMIT $4::int`,
+    [shopId, now.toISOString(), UNCONFIRMED_TTL_DAYS, batch],
+  );
+  return rows.map((r) => r.id);
+}
 
 export interface RestockMaintenanceResult {
   unconfirmedPurged: number;

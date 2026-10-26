@@ -42,6 +42,18 @@ describe("Phase 12.1 Q1 — validateDestination (host shape + port + TLS/creds)"
     expect(validateDestination({ host: "smtp.example.com", port: 587, security: "none", hasCredentials: true }).ok).toBe(false); // creds need tls
     expect(validateDestination({ host: "smtp.example.com", port: 587, security: "starttls", hasCredentials: true }).ok).toBe(true);
   });
+  it("R5a: rejects non-public IP LITERALS and internal hostnames at save time (pure, no DNS)", () => {
+    for (const host of ["127.0.0.1", "169.254.169.254", "10.0.0.1", "172.16.0.1", "192.168.1.1", "100.64.0.1", "::1", "fe80::1", "::ffff:127.0.0.1"]) {
+      expect(validateDestination({ ...base, host, port: 587 }).ok, host).toBe(false);
+    }
+    for (const host of ["localhost", "mail.localhost", "smtp.local", "foo.internal", "bar.localdomain", "SMTP.LOCAL"]) {
+      expect(validateDestination({ ...base, host, port: 587 }).ok, host).toBe(false);
+    }
+    // a PUBLIC IP literal is still accepted.
+    expect(validateDestination({ ...base, host: "93.184.216.34", port: 587 }).ok).toBe(true);
+    // a normal public hostname is still accepted.
+    expect(validateDestination({ ...base, host: "smtp.sendgrid.net", port: 587 }).ok).toBe(true);
+  });
 });
 
 describe("Phase 12.1 Q1 — IP classification", () => {

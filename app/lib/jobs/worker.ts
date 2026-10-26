@@ -12,8 +12,8 @@ import {
   fetchProductNode,
   fetchCollectionNode,
 } from "~/lib/shopify/bulk.server";
-import { enqueueFullSync, enqueueRestockDrain } from "./queue";
-import { runReconciliationTick, runSignalRetention, runAnalyticsPartitionMaintenance, runRestockMaintenance, selectInstalledShops } from "./maintenance";
+import { enqueueFullSync, enqueueRestockDrain, enqueueRestockConfirm } from "./queue";
+import { runReconciliationTick, runSignalRetention, runAnalyticsPartitionMaintenance, runRestockMaintenance, runRestockConfirmSweep, selectInstalledShops } from "./maintenance";
 import { runRestockDrainForShop } from "~/lib/restock/drain.server";
 import { runRestockConfirm } from "~/lib/restock/send.server";
 import { prismaRootExec } from "~/lib/db/root-exec.server";
@@ -99,12 +99,14 @@ export async function startWorker(): Promise<PgBoss> {
     const parts = await runAnalyticsPartitionMaintenance(prismaRootExec());
     // Phase 12.7: back-in-stock retention (per shop, bounded batches, RLS).
     const restock = await runRestockMaintenance(prismaRootExec(), withShopExec);
+    // Phase 12.2 R5b: re-enqueue any stranded double-opt-in confirmations.
+    const confirmSwept = await runRestockConfirmSweep(prismaRootExec(), withShopExec, enqueueRestockConfirm);
     // Phase 12.3: backstop drain for every installed shop (singleton per shop;
     // a no-op when nothing is pending / email unconfigured).
     const shops = await selectInstalledShops(prismaRootExec());
     for (const id of shops) await enqueueRestockDrain(id).catch(() => {});
     logger.info(
-      { enqueued: n, signalsPurged: purged, partitionsEnsured: parts.ensured.length, partitionsDropped: parts.dropped, restock },
+      { enqueued: n, signalsPurged: purged, partitionsEnsured: parts.ensured.length, partitionsDropped: parts.dropped, restock, confirmSwept },
       "reconciliation tick",
     );
   });

@@ -52,6 +52,12 @@ jobs:
       SHOPIFY_APP_URL: https://localhost:3000
       SCOPES: read_products
       LOG_LEVEL: info
+      # CI-ONLY THROWAWAY (not a production secret): a fixed 64-hex AES key so
+      # the test step and the real worker step both have EMAIL_ENCRYPTION_KEY,
+      # matching what the app requires. Tests are also hermetic without it
+      # (test/setup.ts sets a test default), but providing it here keeps the
+      # worker step and CI/local parity honest.
+      EMAIL_ENCRYPTION_KEY: 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
 
     steps:
       - name: Checkout

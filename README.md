@@ -2,9 +2,9 @@
 
 A production-grade, multi-tenant Shopify **Search, Filter & Discovery** app built
 on the current official **Shopify React Router** template, with PostgreSQL as the
-only data/search engine. This repository is at **Phase 12.1 (Back-in-stock /
-email fix batch: SMTP anti-SSRF destination policy, async confirmation + response
-floor, per-shop email-hash pepper, AES associated-data binding)**.
+only data/search engine. This repository is at **Phase 12.2 (CI-parity fix batch:
+hermetic tests + `npm run test:ci-parity`, workflow env parity, save-time SMTP
+destination feedback, lost-confirmation sweeper)**.
 
 > Phase gating is enforced. Implemented so far: Phase 1 (foundation: auth,
 > embedded shell, multi-tenancy + RLS, privacy webhooks, billing), Phase 2/2.1
@@ -76,7 +76,13 @@ floor, per-shop email-hash pepper, AES associated-data binding)**.
 > request — behind a fixed response-time floor that closes the new-vs-subscribed
 > timing oracle; a **per-shop random pepper** keys email hashes so rotating the
 > app secret can't orphan dedupe/suppression/redact; and the AES password
-> ciphertext is bound to its shop + purpose with associated data). Later phases to
+> ciphertext is bound to its shop + purpose with associated data), Phase 12.2
+> (CI-parity fix batch: **hermetic** tests — no test depends on a developer's
+> `.env` — an `npm run test:ci-parity` harness that runs the suite in a scrubbed
+> environment derived from the CI workflow's own `env:` block with a drift guard,
+> save-time SMTP destination feedback for private/`.local` hosts, and a
+> maintenance-tick sweeper that recovers stranded double-opt-in confirmations).
+> Later phases to
 > follow. See `docs/PHASE*.md`. Stack unchanged: no Redis, no external search/AI/analytics,
 > PostgreSQL-only; scopes = `read_products` (Phase 11 adds no scope; purchase
 > attribution / Web Pixel / real bundle discounts = Requires Verification).

@@ -19,6 +19,7 @@
     "worker:dev": "vite-node app/lib/jobs/run-worker.ts",
     "worker:smoke": "node scripts/worker-smoke.mjs",
     "test": "vitest run",
+    "test:ci-parity": "node scripts/ci-parity.mjs",
     "test:watch": "vitest",
     "test:isolation": "vitest run test/database-rls.test.ts test/tenant-withshop.test.ts"
   },

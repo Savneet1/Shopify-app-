@@ -90,6 +90,22 @@ describe("Phase 12.1 Q2 — subscribe is constant-time-ish (no existence oracle)
     // The 60–100× raw gap is gone: both are dominated by the fixed floor.
     expect(Math.abs(newT - existingT)).toBeLessThan(60);
   });
+
+  it("R5b: a slow (400ms) enqueue never extends the response past the floor", async () => {
+    // Fire-and-forget: the enqueue runs off the request path; the sweeper would
+    // recover a dropped one. new and exists stay equal and floor-bound.
+    const slowEnqueue = async () => { await new Promise((r) => setTimeout(r, 400)); };
+    const slow = (email: string) => (async () => {
+      const start = Date.now();
+      await db.withShopExec(shop, (e) => runSubscribeRequest(e, shop, { email, productGid: G(1), consent: true }, { enqueueConfirm: slowEnqueue, startedMs: start }));
+      return Date.now() - start;
+    })();
+    const newT = await slow("slownew@example.com");
+    await slow("slowrepeat@example.com");
+    const existingT = await slow("slowrepeat@example.com");
+    expect(newT).toBeLessThan(RESPONSE_FLOOR_MS + 120);   // not held for 400ms
+    expect(Math.abs(newT - existingT)).toBeLessThan(60);
+  });
 });
 
 describe("Phase 12.1 Q2 — worker-side confirmation job", () => {
