@@ -171,3 +171,18 @@ a.boost-recs__card:focus-visible { outline: 2px solid var(--boost-focus, #1a56db
 .boost-preorder__badge, .boost-card__preorder, .boost-recs__preorder, .boost-bundle__preorder {
   display: inline-block; padding: .1rem .45rem; border-radius: 4px; background: #eef2ff; color: #3538cd; font-size: .75rem; font-weight: 600; }
 .boost-preorder__note { color: #555; font-size: .85rem; }
+
+/* Phase 13.5 — combined-listing aggregate range on a parent card (additive). */
+.boost-card__combined-range { color: #555; font-size: .8rem; }
+
+/* Phase 13.1 — interest-suggestion footer controls (predictive dropdown). */
+.boost-predictive__footer {
+  display: flex; gap: .75rem; align-items: center; flex-wrap: wrap;
+  padding: .4rem .6rem; border-top: 1px solid #eee; font-size: .8rem; }
+.boost-predictive__toggle, .boost-predictive__clear {
+  background: none; border: none; padding: 0; color: var(--boost-focus, #1a56db);
+  cursor: pointer; font: inherit; text-decoration: underline; }
+.boost-predictive__opt--recent { color: #555; }
+
+/* Phase 13.2 — RTL: the app sets dir on its own root; logical props do the rest. */
+[dir="rtl"] .boost-predictive__footer { flex-direction: row-reverse; }

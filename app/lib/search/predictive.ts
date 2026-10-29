@@ -9,6 +9,9 @@ import {
 } from "./query";
 import { catalogSuggestionsWithExec, type Suggestion } from "./suggest";
 import { loadMerchPlan } from "~/lib/merch/rules";
+import { loadCombinedMode, combinedHideFor } from "./combined";
+import { validateLocale } from "./hints";
+import { resolveLocale } from "~/lib/i18n/locales";
 
 /**
  * Predictive (as-you-type) search (Phase 3.4): a small, fast set of product
@@ -42,7 +45,7 @@ function clampPredictiveLimit(limit?: number): number {
 export async function predictiveWithExec(
   exec: Exec,
   shopId: string,
-  params: { q: string; limit?: number; visitorToken?: string | null },
+  params: { q: string; limit?: number; visitorToken?: string | null; locale?: string | null },
 ): Promise<PredictiveResponse> {
   const started = Date.now();
   const { q } = normalizeParams({ q: params.q });
@@ -68,10 +71,13 @@ export async function predictiveWithExec(
   const merch = await loadMerchPlan(exec, shopId, active.id, {
     q, collectionGid: null, now: new Date(), token: params.visitorToken ?? null,
   });
+  // Phase 13.5: combined-listing hide mode applies to predictive + its suggestions.
+  const combinedHide = combinedHideFor(await loadCombinedMode(exec, shopId));
   // Products via the shared cascade (small page). searchWithExec sets its own
   // statement_timeout; both are SET LOCAL, harmless to re-set.
-  const res = await searchWithExec(exec, shopId, { q, limit, offset: 0, merch });
-  const suggestions = await catalogSuggestionsWithExec(exec, shopId, q, PREDICTIVE_MAX_LIMIT, { hideIds: merch.hideIds });
+  const resolvedLocale = resolveLocale(validateLocale(params.locale));
+  const res = await searchWithExec(exec, shopId, { q, limit, offset: 0, merch, combinedHide, locale: resolvedLocale });
+  const suggestions = await catalogSuggestionsWithExec(exec, shopId, q, PREDICTIVE_MAX_LIMIT, { hideIds: merch.hideIds, combinedHide });
   return {
     products: res.products,
     suggestions,
@@ -84,7 +90,7 @@ export async function predictiveWithExec(
 
 export async function predictiveSearch(
   shopId: string,
-  params: { q: string; limit?: number; visitorToken?: string | null },
+  params: { q: string; limit?: number; visitorToken?: string | null; locale?: string | null },
 ): Promise<PredictiveResponse> {
   const started = Date.now();
   try {

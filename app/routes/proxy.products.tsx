@@ -35,6 +35,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) =>
       nl,
       ignore,
       visitorToken: sanitizeToken(sp.get("abt")), // Phase 8: bounded anonymous A/B token (no PII)
+      locale: sp.get("locale"), // Phase 13.2: UNTRUSTED locale hint (validated server-side)
     });
   });
 

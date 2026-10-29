@@ -35,6 +35,8 @@ const PRODUCT_FIELDS = `
   id title handle description vendor productType status tags updatedAt createdAt
   totalInventory tracksInventory
   onlineStoreUrl
+  combinedListingRole
+  combinedListing { parentProduct { id } }
   featuredImage { url altText }
   options { name values }
   ${METAFIELD_FIELDS}`;

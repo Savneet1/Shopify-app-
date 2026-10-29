@@ -5,7 +5,8 @@ import {
   purgeOldAnalyticsEvents, purgeOldAnalyticsRollup, maintainAnalyticsPartitions,
   type PartitionMaintenanceResult,
 } from "~/lib/analytics/retention";
-import { purgeRestockData, selectStrandedConfirmations, type RestockMaintenanceResult } from "~/lib/restock/retention";
+import { purgeRestockData, selectStrandedConfirmations, markConfirmSwept, type RestockMaintenanceResult } from "~/lib/restock/retention";
+import { loadEmailSettingsView } from "~/lib/email/settings";
 
 /**
  * Scheduled reconciliation (G8). A periodic tick enumerates INSTALLED shops
@@ -128,11 +129,19 @@ export async function runRestockConfirmSweep(
   enqueue: (shopId: string, subscriptionId: string) => Promise<unknown>,
   opts: { now?: Date; batchSize?: number } = {},
 ): Promise<number> {
+  const now = opts.now ?? new Date();
   const ids = await selectInstalledShops(rootExec);
   let total = 0;
   for (const id of ids) {
-    const stranded = await runner(id, (e) => selectStrandedConfirmations(e, id, opts));
+    // 13.0: only sweep shops whose email is actually configured + valid, so a
+    // no-SMTP (or down) shop never churns the queue or burns the attempt cap.
+    const configured = await runner(id, (e) => loadEmailSettingsView(e, id)).then((v) => v.configured).catch(() => false);
+    if (!configured) continue;
+    const stranded = await runner(id, (e) => selectStrandedConfirmations(e, id, { ...opts, now }));
+    if (stranded.length === 0) continue;
     for (const subId of stranded) { await enqueue(id, subId).catch(() => {}); total++; }
+    // Record the attempt (bump count + stamp time) so the backoff widens.
+    await runner(id, (e) => markConfirmSwept(e, id, stranded, now));
   }
   return total;
 }

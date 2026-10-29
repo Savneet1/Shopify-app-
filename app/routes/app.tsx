@@ -38,6 +38,7 @@ export default function App() {
         <a href="/app/recommendations">Recommendations</a>
         <a href="/app/bundles">Bundles</a>
         <a href="/app/analytics">Analytics</a>
+        <a href="/app/localization">Localization</a>
       </NavMenu>
       <Outlet />
     </AppProvider>

@@ -84,6 +84,14 @@
       },
       "countdown_heading": {
         "label": "Titre du compte à rebours (facultatif)"
+      },
+      "personalized": {
+        "label": "Activer les suggestions personnalisées",
+        "info": "Les recherches récentes et les suggestions restent dans le navigateur du client et ne sont utilisées qu'après consentement analytique. Rien n'est stocké sur le serveur."
+      },
+      "price_hydration": {
+        "label": "Afficher les prix par marché (requêtes supplémentaires)",
+        "info": "Lorsque activé, chaque carte récupère le prix en direct du produit et le reformate dans la devise active du visiteur. Ajoute une petite requête same-origin par carte. Désactivé par défaut."
       }
     }
   }

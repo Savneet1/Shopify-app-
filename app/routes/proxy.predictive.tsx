@@ -16,6 +16,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) =>
       q: url.searchParams.get("q") ?? "",
       limit: numParam(url.searchParams.get("limit")),
       visitorToken: sanitizeToken(url.searchParams.get("abt")), // Phase 8: bounded A/B token
+      locale: url.searchParams.get("locale"), // Phase 13.2: UNTRUSTED locale hint
     }),
   );
 

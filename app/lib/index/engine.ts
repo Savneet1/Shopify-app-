@@ -71,6 +71,7 @@ function docInsertSql(whereFrag: string): string {
         v.price_min AS price_min, v.price_max AS price_max,
         COALESCE(p.metafields, '{}'::jsonb) AS metafields,
         p.product_created_at AS created_at_shopify,
+        p.combined_role AS combined_role,
         ${tsv} AS tsv,
         jsonb_build_object(
           'title', p.title, 'description', p.description, 'vendor', p.vendor,
@@ -86,7 +87,16 @@ function docInsertSql(whereFrag: string): string {
           'compareAtMin', v.compare_min, 'compareAtMax', v.compare_max,
           'variants', COALESCE(v.variants, '[]'::jsonb),
           'collections', COALESCE(c.collections, '[]'::jsonb)
-        ) AS doc,
+        )
+        -- Phase 13.5: combined-listing fields are MERGED IN ONLY when the product
+        -- has a role, so docs for shops with no combined listings are byte-identical.
+        || (CASE WHEN p.combined_role IS NOT NULL THEN
+              jsonb_build_object('combinedRole', p.combined_role, 'combinedParentGid', p.combined_parent_gid)
+              || (CASE WHEN p.combined_role = 'PARENT' THEN
+                    jsonb_build_object('combinedChildCount', COALESCE(cl.child_count, 0),
+                                       'combinedPriceMin', cl.cmin, 'combinedPriceMax', cl.cmax)
+                  ELSE '{}'::jsonb END)
+            ELSE '{}'::jsonb END) AS doc,
         btrim(concat_ws(' ',
           p.title, p.description, p.vendor, p.product_type,
           pt.tags_text, v.variant_text, c.collection_text
@@ -116,15 +126,27 @@ function docInsertSql(whereFrag: string): string {
         FROM product_collection pc JOIN collection col ON col.id = pc.collection_id AND col.deleted_at IS NULL
         WHERE pc.product_id = p.id
       ) c ON TRUE
+      -- Phase 13.5: for a PARENT, derive the child count + aggregate price range
+      -- from the CHILD rows (which carry combined_parent_gid). Empty for others.
+      LEFT JOIN LATERAL (
+        SELECT count(*)::int AS child_count, min(cv.pmin) AS cmin, max(cv.pmax) AS cmax
+        FROM product cp
+        LEFT JOIN LATERAL (
+          SELECT min(vv.price) AS pmin, max(vv.price) AS pmax
+          FROM variant vv WHERE vv.product_id = cp.id AND vv.deleted_at IS NULL
+        ) cv ON TRUE
+        WHERE cp.shop_id = p.shop_id AND cp.deleted_at IS NULL
+          AND p.combined_role = 'PARENT' AND cp.combined_parent_gid = p.shopify_product_gid
+      ) cl ON TRUE
       WHERE ${whereFrag}
     )
     INSERT INTO product_search_doc
       (shop_id, index_version_id, product_id, shopify_product_gid, doc, search_text,
        content_hash, tsv, title, sku_text, status, published, available,
-       vendor, product_type, tags, price_min, price_max, metafields, created_at_shopify)
+       vendor, product_type, tags, price_min, price_max, metafields, created_at_shopify, combined_role)
     SELECT shop_id, $2::uuid, product_id, shopify_product_gid, doc, COALESCE(search_text,''),
        md5(doc::text), tsv, title, sku_text, status, published, available,
-       vendor, product_type, COALESCE(tags_arr, '{}'), price_min, price_max, metafields, created_at_shopify
+       vendor, product_type, COALESCE(tags_arr, '{}'), price_min, price_max, metafields, created_at_shopify, combined_role
     FROM built
     ON CONFLICT (shop_id, index_version_id, product_id) DO UPDATE
       SET doc=EXCLUDED.doc, search_text=EXCLUDED.search_text, content_hash=EXCLUDED.content_hash,
@@ -132,7 +154,7 @@ function docInsertSql(whereFrag: string): string {
           status=EXCLUDED.status, published=EXCLUDED.published, available=EXCLUDED.available,
           vendor=EXCLUDED.vendor, product_type=EXCLUDED.product_type, tags=EXCLUDED.tags,
           price_min=EXCLUDED.price_min, price_max=EXCLUDED.price_max, metafields=EXCLUDED.metafields,
-          created_at_shopify=EXCLUDED.created_at_shopify`;
+          created_at_shopify=EXCLUDED.created_at_shopify, combined_role=EXCLUDED.combined_role`;
 }
 
 export async function createIndexVersion(

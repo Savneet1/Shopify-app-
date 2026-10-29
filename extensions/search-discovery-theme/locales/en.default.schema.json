@@ -84,6 +84,14 @@
       },
       "countdown_heading": {
         "label": "Countdown heading (optional)"
+      },
+      "personalized": {
+        "label": "Enable personalised suggestions",
+        "info": "Recent searches and suggestions stay in the shopper's own browser and are used only after analytics consent is granted. Nothing is stored on the server."
+      },
+      "price_hydration": {
+        "label": "Show market-specific prices (extra requests)",
+        "info": "When on, each result card fetches the product's live price from your store and reformats it in the visitor's active currency. Adds one small same-origin request per card. Off by default."
       }
     }
   }

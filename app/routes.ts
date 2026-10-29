@@ -35,6 +35,8 @@ export default [
     // Phase 12: back-in-stock + email + pre-order + countdown admin.
     route("restock", "routes/app.restock.tsx"),
     route("restock/export", "routes/app.restock.export.tsx"),
+    // Phase 13: localization, markets context, combined listings.
+    route("localization", "routes/app.localization.tsx"),
   ]),
 
   // App Proxy storefront endpoints (Phase 3). Shopify proxies

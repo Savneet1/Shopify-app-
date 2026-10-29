@@ -1,0 +1,79 @@
+{
+  "boost": {
+    "predictive": {
+      "listbox_label": "検索候補",
+      "results_available": "件の結果",
+      "no_results": "結果がありません",
+      "recent_searches": "最近の検索",
+      "suggested_for_you": "あなたへのおすすめ",
+      "personalize_on": "パーソナライズされた候補をオンにする",
+      "personalize_off": "パーソナライズされた候補をオフにする",
+      "clear_history": "履歴を消去"
+    },
+    "results": {
+      "filters": "絞り込み",
+      "results": "件",
+      "sort_by": "並び替え",
+      "sort_relevance": "関連度",
+      "sort_price_asc": "価格: 安い順",
+      "sort_price_desc": "価格: 高い順",
+      "sort_newest": "新着順",
+      "interpreted_as": "解釈結果",
+      "remove": "削除",
+      "fell_back": "通常検索に簡略化しました",
+      "showing_for": "次の検索結果",
+      "out_of_stock": "在庫切れ",
+      "no_products": "該当する商品がありません。",
+      "try_instead": "こちらをお試しください",
+      "prev": "前へ",
+      "next": "次へ",
+      "page": "ページ",
+      "pagination": "ページ送り",
+      "loading": "結果を読み込み中…",
+      "unavailable": "検索は一時的にご利用いただけません。",
+      "use_native": "標準検索を使用",
+      "noscript": "拡張検索を使うにはJavaScriptを有効にするか、ブラウザの標準検索をご利用ください。",
+      "count_one": "{count} 件",
+      "count_other": "{count} 件"
+    },
+    "recs": {
+      "out_of_stock": "在庫切れ",
+      "unavailable": "おすすめは一時的にご利用いただけません。"
+    },
+    "bundle": {
+      "add": "セットをカートに追加",
+      "adding": "追加中…",
+      "added": "カートに追加しました。",
+      "add_error": "セットを追加できませんでした。もう一度お試しください。",
+      "total": "合計",
+      "unavailable": "このセットは現在ご利用いただけません。",
+      "quantity": "数量",
+      "variant": "バリエーション"
+    },
+    "notify": {
+      "heading": "入荷したら知らせる",
+      "description": "メールアドレスを入力すると、この商品が再入荷した際にお知らせします。",
+      "email_label": "メールアドレス",
+      "email_placeholder": "you@example.com",
+      "consent": "この商品が再入荷したら一度だけ通知してください。いつでも配信停止できます。",
+      "button": "通知する",
+      "sending": "送信中…",
+      "success": "ありがとうございます。再入荷したらメールでお知らせします。受信トレイで確認してください。",
+      "error": "現在登録できませんでした。後ほどお試しください。",
+      "invalid_email": "有効なメールアドレスを入力してください。",
+      "need_consent": "一度限りの通知を受け取るにはチェックを入れてください。"
+    },
+    "countdown": {
+      "ends_in": "終了まで",
+      "days": "日",
+      "hours": "時間",
+      "minutes": "分",
+      "seconds": "秒",
+      "ended": "このオファーは終了しました。"
+    },
+    "preorder": {
+      "badge": "予約注文",
+      "ships_on": "発送日"
+    }
+  }
+}

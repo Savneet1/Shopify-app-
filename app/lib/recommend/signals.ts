@@ -1,5 +1,6 @@
 import type { Exec } from "~/lib/db/executor";
 import { Params } from "~/lib/search/filters";
+import { combinedHidePredicate } from "~/lib/search/match";
 import { classifyRef, partitionRefs, type ProductRef } from "./refs";
 import type { ContentCard } from "./content";
 
@@ -162,6 +163,8 @@ export interface TrendingOptions {
   excludeProductIds?: string[];
   halfLifeDays: number;
   now?: Date;
+  /** Phase 13.5 combined-listing hide mode (role excluded from the shelf). */
+  combinedHide?: "child" | "parent";
 }
 
 /** Common candidate filters (visibility + OOS policy + hide + exclusions). */
@@ -172,6 +175,8 @@ function candidateFilters(pb: Params, opts: TrendingOptions, alias = "d"): strin
   if (opts.excludeProductIds && opts.excludeProductIds.length > 0) {
     parts.push(`${alias}.product_id <> ALL(${pb.add(opts.excludeProductIds)}::uuid[])`);
   }
+  const ch = combinedHidePredicate(opts.combinedHide, `${alias}.combined_role`);
+  if (ch) parts.push(ch);
   return parts;
 }
 

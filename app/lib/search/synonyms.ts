@@ -24,23 +24,43 @@ export interface SynonymRow {
   kind: SynonymKind;
   from_term: string | null;
   terms: string[];
+  locale?: string | null;
 }
 
 function normPhrase(s: string): string {
   return tokenize(s).join(" ");
 }
 
+/** Admin listing — ALL rows for the shop, regardless of locale (the admin UI
+ * shows the per-row locale scope). */
 export async function listSynonyms(exec: Exec, shopId: string): Promise<SynonymRow[]> {
   return exec.rows<SynonymRow>(
-    `SELECT id, kind, from_term, terms FROM search_synonym WHERE shop_id=$1::uuid ORDER BY created_at`,
+    `SELECT id, kind, from_term, terms, locale FROM search_synonym WHERE shop_id=$1::uuid ORDER BY created_at`,
     [shopId],
+  );
+}
+
+/**
+ * Phase 13.2 — QUERY-TIME synonyms for a resolved locale. Global rows
+ * (locale IS NULL) always apply; locale-specific rows apply only when `locale`
+ * matches. With no locale-specific rows this returns the same set as
+ * listSynonyms → byte-identical. `locale` is a validated BCP-47 value or null
+ * (null → only global rows).
+ */
+export async function listSynonymsForLocale(
+  exec: Exec, shopId: string, locale: string | null,
+): Promise<SynonymRow[]> {
+  return exec.rows<SynonymRow>(
+    `SELECT id, kind, from_term, terms, locale FROM search_synonym
+     WHERE shop_id=$1::uuid AND (locale IS NULL OR locale = $2) ORDER BY created_at`,
+    [shopId, locale],
   );
 }
 
 export async function addSynonym(
   exec: Exec,
   shopId: string,
-  input: { kind: SynonymKind; fromTerm?: string | null; terms: string[] },
+  input: { kind: SynonymKind; fromTerm?: string | null; terms: string[]; locale?: string | null },
 ): Promise<SynonymRow> {
   const terms = (input.terms ?? []).map(normPhrase).filter((t) => t.length > 0);
   if (input.kind === "two_way") {
@@ -62,10 +82,10 @@ export async function addSynonym(
 
   const fromTerm = input.kind === "one_way" ? normPhrase(input.fromTerm!) : null;
   const rows = await exec.rows<SynonymRow>(
-    `INSERT INTO search_synonym (shop_id, kind, from_term, terms)
-     VALUES ($1::uuid, $2, $3, $4::text[])
-     RETURNING id, kind, from_term, terms`,
-    [shopId, input.kind, fromTerm, terms],
+    `INSERT INTO search_synonym (shop_id, kind, from_term, terms, locale)
+     VALUES ($1::uuid, $2, $3, $4::text[], $5)
+     RETURNING id, kind, from_term, terms, locale`,
+    [shopId, input.kind, fromTerm, terms, input.locale ?? null],
   );
   return rows[0];
 }

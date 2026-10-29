@@ -36,16 +36,22 @@
     "allowedHosts": [{{ shop.permanent_domain | json }}, {{ shop.domain | json }}],
     "imageHosts": ["cdn.shopify.com", {{ shop.permanent_domain | json }}, {{ shop.domain | json }}],
     "currency": {{ shop.currency | json }},
+    "activeCurrency": {{ localization.country.currency.iso_code | default: shop.currency | json }},
+    "locale": {{ request.locale.iso_code | default: 'en' | json }},
+    "country": {{ localization.country.iso_code | default: '' | json }},
     "perPage": {{ block.settings.per_page | default: 24 | json }},
     "nlEnabled": {% if block.settings.nl_enabled == false %}false{% else %}true{% endif %},
     "banners": {% if block.settings.show_banners == false %}false{% else %}true{% endif %},
     "abTesting": {% if block.settings.ab_testing == false %}false{% else %}true{% endif %},
     "analytics": {% if block.settings.analytics == true %}true{% else %}false{% endif %},
+    "priceHydration": {% if block.settings.price_hydration == true %}true{% else %}false{% endif %},
     "metafieldKey": {{ block.settings.metafield_key | default: 'material' | json }},
     "timeoutMs": {{ block.settings.timeout_ms | default: 2000 | json }},
     "labels": {
       "filters": {{ 'boost.results.filters' | t | json }},
       "results": {{ 'boost.results.results' | t | json }},
+      "countOne": {{ 'boost.results.count_one' | t | json }},
+      "countOther": {{ 'boost.results.count_other' | t | json }},
       "sortBy": {{ 'boost.results.sort_by' | t | json }},
       "sortRelevance": {{ 'boost.results.sort_relevance' | t | json }},
       "sortPriceAsc": {{ 'boost.results.sort_price_asc' | t | json }},
@@ -118,6 +124,13 @@
       "label": "t:boost.settings.ab_testing.label",
       "info": "t:boost.settings.ab_testing.info",
       "default": true
+    },
+    {
+      "type": "checkbox",
+      "id": "price_hydration",
+      "label": "t:boost.settings.price_hydration.label",
+      "info": "t:boost.settings.price_hydration.info",
+      "default": false
     },
     {
       "type": "checkbox",

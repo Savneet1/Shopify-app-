@@ -20,6 +20,7 @@ export interface StopwordRow {
   id: string;
   word: string;
   mode: StopwordMode;
+  locale?: string | null;
 }
 
 export const MAX_STOPWORD_OVERRIDES = 500;
@@ -30,7 +31,7 @@ function norm(word: string): string {
 
 export async function listStopwords(exec: Exec, shopId: string): Promise<StopwordRow[]> {
   return exec.rows<StopwordRow>(
-    `SELECT id, word, mode FROM search_stopword WHERE shop_id=$1::uuid ORDER BY word`,
+    `SELECT id, word, mode, locale FROM search_stopword WHERE shop_id=$1::uuid ORDER BY word`,
     [shopId],
   );
 }
@@ -40,6 +41,7 @@ export async function addStopwordOverride(
   shopId: string,
   word: string,
   mode: StopwordMode,
+  locale: string | null = null,
 ): Promise<StopwordRow> {
   const w = norm(word);
   if (w.length === 0) throw new Error("stopword cannot be empty");
@@ -50,11 +52,13 @@ export async function addStopwordOverride(
   if (count >= MAX_STOPWORD_OVERRIDES) {
     throw new Error(`stopword override limit reached (${MAX_STOPWORD_OVERRIDES})`);
   }
+  // Conflict target matches the (shop_id, word, COALESCE(locale,'')) unique index
+  // (migration 0019) so the same word can be scoped per locale.
   const rows = await exec.rows<StopwordRow>(
-    `INSERT INTO search_stopword (shop_id, word, mode) VALUES ($1::uuid, $2, $3)
-     ON CONFLICT (shop_id, word) DO UPDATE SET mode=EXCLUDED.mode
-     RETURNING id, word, mode`,
-    [shopId, w, mode],
+    `INSERT INTO search_stopword (shop_id, word, mode, locale) VALUES ($1::uuid, $2, $3, $4)
+     ON CONFLICT (shop_id, word, COALESCE(locale, '')) DO UPDATE SET mode=EXCLUDED.mode
+     RETURNING id, word, mode, locale`,
+    [shopId, w, mode, locale],
   );
   return rows[0];
 }
@@ -63,9 +67,17 @@ export async function deleteStopwordOverride(exec: Exec, shopId: string, id: str
   return exec.run(`DELETE FROM search_stopword WHERE shop_id=$1::uuid AND id=$2::uuid`, [shopId, id]);
 }
 
-/** Compute the effective stop-word set for a shop. */
-export async function getEffectiveStopwords(exec: Exec, shopId: string): Promise<Set<string>> {
-  const rows = await listStopwords(exec, shopId);
+/** Compute the effective stop-word set for a shop. Phase 13.2: when `locale` is
+ * given, global rows (locale IS NULL) plus rows matching that locale apply;
+ * null → only global rows. With no locale-specific rows this is byte-identical. */
+export async function getEffectiveStopwords(
+  exec: Exec, shopId: string, locale: string | null = null,
+): Promise<Set<string>> {
+  const rows = await exec.rows<StopwordRow>(
+    `SELECT id, word, mode, locale FROM search_stopword
+     WHERE shop_id=$1::uuid AND (locale IS NULL OR locale = $2) ORDER BY word`,
+    [shopId, locale],
+  );
   const set = new Set<string>(DEFAULT_STOPWORDS);
   for (const r of rows) {
     if (r.mode === "add") set.add(r.word);

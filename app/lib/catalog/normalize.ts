@@ -32,6 +32,12 @@ function toTags(tags: any): string[] {
   return [];
 }
 
+/** Phase 13.5: accept only the two roles we store; everything else → null. The
+ * Admin enum CombinedListingsRole is PARENT | CHILD (null = not combined). */
+function normalizeCombinedRole(v: any): "PARENT" | "CHILD" | null {
+  return v === "PARENT" || v === "CHILD" ? v : null;
+}
+
 /**
  * Flatten the captured metafields (configured namespace only) into a
  * { "namespace.key": "value" } map. Only scalar string values are kept — the
@@ -96,6 +102,14 @@ export function normalizeProductNode(node: any): NormalizedProduct {
       // Phase 6: Shopify creation timestamp for the "newest" sort hint.
       productCreatedAt: node.createdAt ?? null,
       shopifyUpdatedAt: node.updatedAt ?? null,
+      // Phase 13.5: combined-listing role + (for a CHILD) its parent's gid.
+      // Only PARENT/CHILD are accepted; anything else (incl. the enum's NONE
+      // or absence) maps to null = not part of a combined listing.
+      combinedRole: normalizeCombinedRole(node.combinedListingRole),
+      combinedParentGid:
+        typeof node.combinedListing?.parentProduct?.id === "string"
+          ? node.combinedListing.parentProduct.id
+          : null,
     },
     variants,
     collectionGids,

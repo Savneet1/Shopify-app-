@@ -1,0 +1,79 @@
+{
+  "boost": {
+    "predictive": {
+      "listbox_label": "Zoeksuggesties",
+      "results_available": "resultaten beschikbaar",
+      "no_results": "Geen resultaten",
+      "recent_searches": "Recente zoekopdrachten",
+      "suggested_for_you": "Voor jou aanbevolen",
+      "personalize_on": "Gepersonaliseerde suggesties inschakelen",
+      "personalize_off": "Gepersonaliseerde suggesties uitschakelen",
+      "clear_history": "Mijn geschiedenis wissen"
+    },
+    "results": {
+      "filters": "Filters",
+      "results": "resultaten",
+      "sort_by": "Sorteren op",
+      "sort_relevance": "Relevantie",
+      "sort_price_asc": "Prijs: laag naar hoog",
+      "sort_price_desc": "Prijs: hoog naar laag",
+      "sort_newest": "Nieuwste",
+      "interpreted_as": "Geïnterpreteerd als",
+      "remove": "Verwijderen",
+      "fell_back": "Vereenvoudigd naar standaardzoekopdracht",
+      "showing_for": "Resultaten voor",
+      "out_of_stock": "Niet op voorraad",
+      "no_products": "Geen producten gevonden.",
+      "try_instead": "Probeer een van deze",
+      "prev": "Vorige",
+      "next": "Volgende",
+      "page": "Pagina",
+      "pagination": "Paginering",
+      "loading": "Resultaten laden…",
+      "unavailable": "Zoeken is tijdelijk niet beschikbaar.",
+      "use_native": "Standaardzoekopdracht gebruiken",
+      "noscript": "Schakel JavaScript in voor uitgebreid zoeken, of gebruik de standaardzoekfunctie van je browser.",
+      "count_one": "{count} resultaat",
+      "count_other": "{count} resultaten"
+    },
+    "recs": {
+      "out_of_stock": "Niet op voorraad",
+      "unavailable": "Aanbevelingen zijn tijdelijk niet beschikbaar."
+    },
+    "bundle": {
+      "add": "Bundel aan winkelwagen toevoegen",
+      "adding": "Toevoegen…",
+      "added": "Toegevoegd aan winkelwagen.",
+      "add_error": "We konden deze bundel niet toevoegen. Probeer het opnieuw.",
+      "total": "Totaal",
+      "unavailable": "Deze bundel is momenteel niet beschikbaar.",
+      "quantity": "Aantal",
+      "variant": "Variant"
+    },
+    "notify": {
+      "heading": "Laat het me weten wanneer beschikbaar",
+      "description": "Vul je e-mailadres in en we laten je weten wanneer dit artikel weer op voorraad is.",
+      "email_label": "E-mailadres",
+      "email_placeholder": "jij@voorbeeld.com",
+      "consent": "Stuur me eenmalig bericht wanneer dit artikel weer op voorraad is. Ik kan me altijd afmelden.",
+      "button": "Houd me op de hoogte",
+      "sending": "Verzenden…",
+      "success": "Bedankt! Als dit artikel terugkomt, mailen we je. Controleer je inbox om te bevestigen.",
+      "error": "We konden dit nu niet registreren. Probeer het later opnieuw.",
+      "invalid_email": "Voer een geldig e-mailadres in.",
+      "need_consent": "Vink het vakje aan om een eenmalige melding te ontvangen."
+    },
+    "countdown": {
+      "ends_in": "Eindigt over",
+      "days": "d",
+      "hours": "u",
+      "minutes": "m",
+      "seconds": "s",
+      "ended": "Deze aanbieding is afgelopen."
+    },
+    "preorder": {
+      "badge": "Pre-order",
+      "ships_on": "Verzending op"
+    }
+  }
+}

@@ -3,7 +3,12 @@
     "predictive": {
       "listbox_label": "Search suggestions",
       "results_available": "results available",
-      "no_results": "No results"
+      "no_results": "No results",
+      "recent_searches": "Recent searches",
+      "suggested_for_you": "Suggested for you",
+      "personalize_on": "Turn on personalised suggestions",
+      "personalize_off": "Turn off personalised suggestions",
+      "clear_history": "Clear my history"
     },
     "results": {
       "filters": "Filters",
@@ -27,7 +32,9 @@
       "loading": "Loading results…",
       "unavailable": "Search is temporarily unavailable.",
       "use_native": "Use standard search",
-      "noscript": "Enable JavaScript to use enhanced search, or use your browser's standard search."
+      "noscript": "Enable JavaScript to use enhanced search, or use your browser's standard search.",
+      "count_one": "{count} result",
+      "count_other": "{count} results"
     },
     "recs": {
       "out_of_stock": "Out of stock",

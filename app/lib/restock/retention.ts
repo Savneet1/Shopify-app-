@@ -18,13 +18,24 @@ export const PENDING_NOTIFICATION_TTL_DAYS = 30;
 export const DEFAULT_RESTOCK_BATCH = 5000;
 /** A pending row with no confirmation sent is "stranded" once older than this. */
 export const STRANDED_CONFIRM_MIN_AGE_MINUTES = 5;
+/** Max sweeper re-enqueue attempts per row (Phase 13.0); then it gives up. */
+export const MAX_CONFIRM_SWEEP_ATTEMPTS = 5;
 
 /**
- * Phase 12.1 Q2 / 12.2 R5b — find back-in-stock rows whose confirmation never
- * got sent (the enqueue failed or the process died after commit): status
+ * Phase 12.1 Q2 / 12.2 R5b / 13.0 — find back-in-stock rows whose confirmation
+ * never got sent (the enqueue failed or the process died after commit): status
  * `pending`, `confirm_sent_at IS NULL`, older than 5 minutes (so a just-created
  * row the live enqueue is still handling is left alone), younger than the 7-day
  * unconfirmed TTL (an older row is purged, not re-mailed), and NOT suppressed.
+ *
+ * 13.0 anti-churn: only rows under the attempt cap and past their EXPONENTIAL
+ * backoff are returned — eligible when `confirm_last_sweep_at IS NULL` (never
+ * swept) or `confirm_last_sweep_at <= now - 1 hour * 2^confirm_sweep_count`
+ * (thresholds 1,2,4,8,16h for counts 0..4), with `confirm_sweep_count < 5`. The
+ * CALLER increments both via `markConfirmSwept` when it re-enqueues, and only
+ * calls this for shops whose email is configured — so a no-SMTP shop never
+ * burns the cap and later configuration releases the rows.
+ *
  * RLS-scoped; bounded batch. Returns the subscription ids to re-enqueue (the
  * caller enqueues with the SAME singleton key, so re-runs create no duplicates).
  */
@@ -38,11 +49,28 @@ export async function selectStrandedConfirmations(
      WHERE s.shop_id=$1::uuid AND s.status='pending' AND s.confirm_sent_at IS NULL
        AND s.created_at < $2::timestamptz - make_interval(mins => ${STRANDED_CONFIRM_MIN_AGE_MINUTES})
        AND s.created_at > $2::timestamptz - make_interval(days => $3::int)
+       AND s.confirm_sweep_count < ${MAX_CONFIRM_SWEEP_ATTEMPTS}
+       AND (s.confirm_last_sweep_at IS NULL
+            OR s.confirm_last_sweep_at <= $2::timestamptz - make_interval(hours => (power(2, s.confirm_sweep_count))::int))
        AND NOT EXISTS (SELECT 1 FROM restock_suppression x WHERE x.shop_id=s.shop_id AND x.email_hash=s.email_hash)
      ORDER BY s.created_at ASC LIMIT $4::int`,
     [shopId, now.toISOString(), UNCONFIRMED_TTL_DAYS, batch],
   );
   return rows.map((r) => r.id);
+}
+
+/** Record a sweeper re-enqueue attempt: bump the count + stamp the time, so the
+ * backoff in `selectStrandedConfirmations` widens and the cap is enforced. */
+export async function markConfirmSwept(
+  exec: Exec, shopId: string, ids: string[], now: Date,
+): Promise<number> {
+  if (ids.length === 0) return 0;
+  return exec.run(
+    `UPDATE back_in_stock_subscription
+       SET confirm_sweep_count = confirm_sweep_count + 1, confirm_last_sweep_at = $2::timestamptz, updated_at = now()
+     WHERE shop_id=$1::uuid AND id = ANY($3::uuid[])`,
+    [shopId, now.toISOString(), ids],
+  );
 }
 
 export interface RestockMaintenanceResult {

@@ -1,0 +1,79 @@
+{
+  "boost": {
+    "predictive": {
+      "listbox_label": "Suggerimenti di ricerca",
+      "results_available": "risultati disponibili",
+      "no_results": "Nessun risultato",
+      "recent_searches": "Ricerche recenti",
+      "suggested_for_you": "Suggeriti per te",
+      "personalize_on": "Attiva i suggerimenti personalizzati",
+      "personalize_off": "Disattiva i suggerimenti personalizzati",
+      "clear_history": "Cancella la mia cronologia"
+    },
+    "results": {
+      "filters": "Filtri",
+      "results": "risultati",
+      "sort_by": "Ordina per",
+      "sort_relevance": "Pertinenza",
+      "sort_price_asc": "Prezzo: dal più basso",
+      "sort_price_desc": "Prezzo: dal più alto",
+      "sort_newest": "Più recenti",
+      "interpreted_as": "Interpretato come",
+      "remove": "Rimuovi",
+      "fell_back": "Semplificato in ricerca base",
+      "showing_for": "Risultati per",
+      "out_of_stock": "Esaurito",
+      "no_products": "Nessun prodotto trovato.",
+      "try_instead": "Prova uno di questi",
+      "prev": "Precedente",
+      "next": "Successivo",
+      "page": "Pagina",
+      "pagination": "Impaginazione",
+      "loading": "Caricamento risultati…",
+      "unavailable": "La ricerca non è temporaneamente disponibile.",
+      "use_native": "Usa la ricerca standard",
+      "noscript": "Abilita JavaScript per la ricerca avanzata oppure usa la ricerca standard del browser.",
+      "count_one": "{count} risultato",
+      "count_other": "{count} risultati"
+    },
+    "recs": {
+      "out_of_stock": "Esaurito",
+      "unavailable": "I consigli non sono temporaneamente disponibili."
+    },
+    "bundle": {
+      "add": "Aggiungi il bundle al carrello",
+      "adding": "Aggiunta…",
+      "added": "Aggiunto al carrello.",
+      "add_error": "Impossibile aggiungere il bundle. Riprova.",
+      "total": "Totale",
+      "unavailable": "Questo bundle non è attualmente disponibile.",
+      "quantity": "Quantità",
+      "variant": "Variante"
+    },
+    "notify": {
+      "heading": "Avvisami quando è disponibile",
+      "description": "Inserisci la tua email e ti avviseremo quando l'articolo sarà di nuovo disponibile.",
+      "email_label": "Indirizzo email",
+      "email_placeholder": "tu@esempio.com",
+      "consent": "Avvisami una volta quando l'articolo torna disponibile. Posso annullare l'iscrizione in qualsiasi momento.",
+      "button": "Avvisami",
+      "sending": "Invio…",
+      "success": "Grazie! Se l'articolo torna disponibile, ti invieremo un'email. Controlla la posta per confermare.",
+      "error": "Non è stato possibile registrarlo ora. Riprova più tardi.",
+      "invalid_email": "Inserisci un indirizzo email valido.",
+      "need_consent": "Seleziona la casella per ricevere un avviso una tantum."
+    },
+    "countdown": {
+      "ends_in": "Termina tra",
+      "days": "g",
+      "hours": "h",
+      "minutes": "m",
+      "seconds": "s",
+      "ended": "Questa offerta è terminata."
+    },
+    "preorder": {
+      "badge": "Preordine",
+      "ships_on": "Spedizione il"
+    }
+  }
+}

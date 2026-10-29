@@ -5,7 +5,12 @@ import { createIndexVersion, buildDocs, validateIndexVersion, activateIndexVersi
 import { subscribe } from "~/lib/restock/subscriptions";
 import { selectStrandedConfirmations } from "~/lib/restock/retention";
 import { runRestockConfirmSweep } from "~/lib/jobs/maintenance";
+import { saveEmailSettings } from "~/lib/email/settings";
 import { emailHash, getShopPepper } from "~/lib/crypto/secret.server";
+
+/** Mark a shop's email as configured + valid (host+port+from, no auth needed). */
+const configureEmail = (db: TestDb, shop: string) =>
+  db.withShopExec(shop, (e) => saveEmailSettings(e, shop, { host: "smtp.example.com", port: 587, fromEmail: "shop@example.com" }));
 
 /*
  * Phase 12.2 R5b — the lost-confirmation sweeper. A pending row whose confirm
@@ -97,7 +102,8 @@ describe("Phase 12.2 R5b — stranded-confirmation sweeper", () => {
     expect(await db.withShopExec(shopA, (e) => selectStrandedConfirmations(e, shopA, { now: new Date() }))).toEqual([]);
   });
 
-  it("runRestockConfirmSweep re-enqueues across installed shops (same singleton key dedupes)", async () => {
+  it("runRestockConfirmSweep re-enqueues across installed CONFIGURED shops (same singleton key dedupes)", async () => {
+    await configureEmail(db, shopA); await configureEmail(db, shopB);
     await insertPending(db, shopA, pidA, "a@e.com", { ageMin: 10 });
     await insertPending(db, shopB, pidB, "b@e.com", { ageMin: 10 });
     const calls: Array<[string, string]> = [];
@@ -105,5 +111,55 @@ describe("Phase 12.2 R5b — stranded-confirmation sweeper", () => {
     const n = await runRestockConfirmSweep(db.rootExec, db.withShopExec, enqueue, { now: new Date() });
     expect(n).toBe(2);
     expect(calls.map((c) => c[0]).sort()).toEqual([shopA, shopB].sort());
+  });
+
+  it("13.0: a NO-SMTP shop gives ZERO enqueues over many ticks (no churn, cap untouched)", async () => {
+    // shopA is NOT configured; a stranded row exists.
+    const id = await insertPending(db, shopA, pidA, "nosmtp@e.com", { ageMin: 10 });
+    let now = new Date();
+    const enqueue = async () => { throw new Error("should not enqueue"); };
+    let total = 0;
+    for (let i = 0; i < 6; i++) {
+      total += await runRestockConfirmSweep(db.rootExec, db.withShopExec, enqueue, { now });
+      now = new Date(now.getTime() + 3600_000); // +1h per tick
+    }
+    expect(total).toBe(0);
+    // the attempt cap was never burned, so configuring later still releases it.
+    const count = await db.withShopExec(shopA, async (e) => (await e.rows<{ c: number }>("SELECT confirm_sweep_count c FROM back_in_stock_subscription WHERE id=$1::uuid", [id]))[0].c);
+    expect(Number(count)).toBe(0);
+  });
+
+  it("13.0: a configured shop re-enqueues with exponential backoff then stops at the cap", async () => {
+    await configureEmail(db, shopA);
+    const id = await insertPending(db, shopA, pidA, "backoff@e.com", { ageMin: 10 });
+    const seen: string[] = [];
+    const enqueue = async (_s: string, subId: string) => { seen.push(subId); };
+    const t0 = new Date("2026-06-01T00:00:00Z");
+    // Pin created_at just before the injected clock so the age gate holds.
+    await db.withShopExec(shopA, (e) => e.run("UPDATE back_in_stock_subscription SET created_at=$2::timestamptz WHERE id=$1::uuid", [id, new Date(t0.getTime() - 600_000).toISOString()]));
+    // First sweep fires immediately (confirm_last_sweep_at NULL); then each next
+    // enqueue needs 2^count h since the last — cumulative boundaries 0,2,6,14,30h.
+    // After the 5th enqueue at 30h the next backoff boundary is 30+2^5=62h; a
+    // sweep there must NOT fire because the count hit the cap of 5.
+    const offsetsH = [0, 2, 6, 14, 30, 62];
+    for (const h of offsetsH) {
+      const now = new Date(t0.getTime() + h * 3600_000);
+      await runRestockConfirmSweep(db.rootExec, db.withShopExec, enqueue, { now });
+    }
+    // 5 attempts then the cap stops it (count 0→5), never a 6th.
+    expect(seen.length).toBe(5);
+    const count = await db.withShopExec(shopA, async (e) => (await e.rows<{ c: number }>("SELECT confirm_sweep_count c FROM back_in_stock_subscription WHERE id=$1::uuid", [id]))[0].c);
+    expect(Number(count)).toBe(5);
+  });
+
+  it("13.0: configuring SMTP later releases a stranded row still inside the TTL", async () => {
+    const id = await insertPending(db, shopA, pidA, "late@e.com", { ageMin: 10 });
+    const enqueue = async () => {};
+    // unconfigured → nothing
+    expect(await runRestockConfirmSweep(db.rootExec, db.withShopExec, enqueue, { now: new Date() })).toBe(0);
+    // configure, then it is picked up (count was never burned)
+    await configureEmail(db, shopA);
+    expect(await runRestockConfirmSweep(db.rootExec, db.withShopExec, enqueue, { now: new Date() })).toBe(1);
+    void id;
   });
 });

@@ -2,6 +2,8 @@ import type { Exec } from "~/lib/db/executor";
 import { withShopExec } from "~/lib/tenant.server";
 import { getActiveVersion } from "~/lib/index/engine";
 import { normalizeParams } from "./query";
+import { combinedHidePredicate } from "./match";
+import { loadCombinedMode, combinedHideFor } from "./combined";
 
 /**
  * Catalog-derived suggestions (Phase 3.4).
@@ -41,7 +43,7 @@ export async function catalogSuggestionsWithExec(
   shopId: string,
   prefix: string,
   limit = SUGGEST_MAX,
-  opts?: { hideIds?: string[] },
+  opts?: { hideIds?: string[]; combinedHide?: "child" | "parent" },
 ): Promise<Suggestion[]> {
   const active = await getActiveVersion(exec, shopId);
   if (!active) return [];
@@ -49,6 +51,10 @@ export async function catalogSuggestionsWithExec(
   if (q.length === 0) return [];
   // Phase 8: merchandising-hidden products contribute no suggestion terms.
   const hideIds = opts?.hideIds ?? [];
+  // Phase 13.5: combined-listing hidden role contributes no suggestion terms.
+  // null (show_all) adds no clause → byte-identical.
+  const ch = combinedHidePredicate(opts?.combinedHide);
+  const combinedClause = ch ? ` AND ${ch}` : "";
 
   // Accent-folded, case-insensitive prefix match. `%` / `_` in user input are
   // escaped so they cannot act as LIKE wildcards; the trailing `%` we add is the
@@ -64,7 +70,7 @@ export async function catalogSuggestionsWithExec(
       SELECT doc, title FROM product_search_doc
       WHERE shop_id=$1::uuid AND index_version_id=$2::uuid
         AND published = true AND status = 'ACTIVE'
-        AND product_id <> ALL($4::uuid[])
+        AND product_id <> ALL($4::uuid[])${combinedClause}
     ),
     terms AS (
       SELECT title AS text, 'title'::text AS type FROM visible WHERE title IS NOT NULL
@@ -126,7 +132,8 @@ export async function suggest(
       if (!active) {
         return { suggestions: [], indexVersion: null, tookMs: Date.now() - started, fallback: "native" as const };
       }
-      const suggestions = await catalogSuggestionsWithExec(exec, shopId, q, limit);
+      const combinedHide = combinedHideFor(await loadCombinedMode(exec, shopId));
+      const suggestions = await catalogSuggestionsWithExec(exec, shopId, q, limit, { combinedHide });
       return { suggestions, indexVersion: active.version, tookMs: Date.now() - started };
     });
   } catch {

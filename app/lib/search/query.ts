@@ -53,6 +53,11 @@ export interface SearchParams {
   /** Phase 8 merchandising plan (hide/pin/boost/demote). Threaded into the one
    * planner so results, totals and facets stay consistent. */
   merch?: MerchPlan;
+  /** Phase 13.5 combined-listing hide mode, threaded into the one planner. */
+  combinedHide?: "child" | "parent";
+  /** Phase 13.2 resolved locale (validated supported code) for stop-word /
+   * synonym scoping; null/undefined → global rows only (byte-identical). */
+  locale?: string | null;
 }
 
 export interface Correction {
@@ -76,6 +81,31 @@ export interface SearchProduct {
   available: boolean;
   matchClass?: MatchClass;
   score?: number;
+  /** Phase 13.5: present only on combined-listing products (additive). */
+  combined?: {
+    role: "PARENT" | "CHILD";
+    parentGid: string | null;
+    childCount?: number;
+    priceMin?: string | null;
+    priceMax?: string | null;
+  };
+}
+
+/** Phase 13.5: pure helper — lift the combined-listing block out of a doc, or
+ * undefined when the product is not part of a combined listing. Shared by the
+ * two card mappers so the storefront payload shape is identical. */
+export function combinedFromDoc(d: any): SearchProduct["combined"] | undefined {
+  if (d == null || (d.combinedRole !== "PARENT" && d.combinedRole !== "CHILD")) return undefined;
+  const c: NonNullable<SearchProduct["combined"]> = {
+    role: d.combinedRole,
+    parentGid: d.combinedParentGid ?? null,
+  };
+  if (d.combinedRole === "PARENT") {
+    c.childCount = typeof d.combinedChildCount === "number" ? d.combinedChildCount : 0;
+    c.priceMin = d.combinedPriceMin != null ? String(d.combinedPriceMin) : null;
+    c.priceMax = d.combinedPriceMax != null ? String(d.combinedPriceMax) : null;
+  }
+  return c;
 }
 
 export interface SearchResponse {
@@ -122,6 +152,7 @@ function mapDocToProduct(row: {
     available: Boolean(d.available),
     matchClass: row.cls,
     score: row.score != null ? Number(row.score) : undefined,
+    combined: combinedFromDoc(d),
   };
 }
 
@@ -134,12 +165,13 @@ export async function resolvePlanned(
   plan: QueryPlan,
   filters: SearchFilters,
   merch?: MerchPlan,
+  combinedHide?: "child" | "parent",
 ): Promise<PlannedMatch | null> {
-  // merch is attached so the probe, products, and facets all share the hide
-  // exclusion (via buildWhere) — one PlannedMatch, no drift.
-  if (plan.isEmpty) return { plan, level: "browse", merch };
+  // merch + combinedHide are attached so the probe, products, and facets all
+  // share the hide exclusion (via buildWhere) — one PlannedMatch, no drift.
+  if (plan.isEmpty) return { plan, level: "browse", merch, combinedHide };
   for (const level of ["primary", "partial"] as PlanLevel[]) {
-    const m: PlannedMatch = { plan, level, merch };
+    const m: PlannedMatch = { plan, level, merch, combinedHide };
     const pb = new Params();
     const where = buildWhere(pb, shopId, versionId, filters, m);
     const rows = await exec.rows(`SELECT 1 FROM product_search_doc WHERE ${where} LIMIT 1`, pb.values);
@@ -289,8 +321,8 @@ export async function searchWithExec(
     return { ...emptyBase, strategy: "none", indexVersion: null, tookMs: Date.now() - started, fallback: "native" };
   }
 
-  const plan = await buildPlan(exec, shopId, active.id, q);
-  const planned = await resolvePlanned(exec, shopId, active.id, plan, filters, params.merch);
+  const plan = await buildPlan(exec, shopId, active.id, q, params.locale ?? null);
+  const planned = await resolvePlanned(exec, shopId, active.id, plan, filters, params.merch, params.combinedHide);
   const corrections = plan.corrections;
 
   if (!planned) {

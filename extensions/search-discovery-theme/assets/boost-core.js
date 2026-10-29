@@ -520,6 +520,414 @@
     };
   }
 
+  // ---- Phase 13.1: client-side PII guard (port of server Phase 11.1) ----
+  // Canonicalise-then-redact so a split/obfuscated email or digit run is still
+  // caught before anything is written to the shopper's own browser storage. We
+  // NEVER store a search that looks like PII. Pure, never throws.
+  var PII_EMAIL_RE = /[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.[\p{L}]{2,}/gu;
+  var PII_URL_RE = /\b(?:https?:\/\/|www\.)\S+/giu;
+  var PII_CARD_RE = /(?:\p{Nd}[ -]?){13,19}/gu;
+  var PII_PHONE_RE = /\+?\p{Nd}[\p{Nd} ().-]{5,}\p{Nd}/gu;
+  var PII_TOKEN_RE = /\b[A-Za-z0-9_-]{20,}\b/g;
+  var PII_INVISIBLE_RE = /[­​-‏⁠﻿]/g;
+  var PII_Nd_RE = /\p{Nd}/u;
+  var PII_DIGIT_ZEROES = [
+    0x30, 0x660, 0x6f0, 0x7c0, 0x966, 0x9e6, 0xa66, 0xae6, 0xb66, 0xbe6, 0xc66,
+    0xce6, 0xd66, 0xe50, 0xed0, 0xf20, 0x1040, 0x17e0, 0x1810, 0xff10,
+  ];
+  function piiFoldDigit(ch) {
+    var cp = ch.codePointAt(0);
+    for (var i = 0; i < PII_DIGIT_ZEROES.length; i++) {
+      var z = PII_DIGIT_ZEROES[i];
+      if (cp >= z && cp <= z + 9) return String(cp - z);
+    }
+    return ch;
+  }
+  function piiCountDigits(s) {
+    var n = 0;
+    for (var i = 0; i < s.length; i++) if (PII_Nd_RE.test(s[i])) n++;
+    return n;
+  }
+  function canonicalizeForPII(input) {
+    try {
+      var s = String(input).normalize("NFKC").replace(PII_INVISIBLE_RE, "").replace(/\p{Cf}/gu, "");
+      if (PII_Nd_RE.test(s)) s = s.replace(/\p{Nd}/gu, piiFoldDigit);
+      return s;
+    } catch (e) { return String(input == null ? "" : input); }
+  }
+  function redactPII(input) {
+    var redacted = false;
+    var out = String(input == null ? "" : input);
+    var apply = function (re, test) {
+      out = out.replace(re, function (m) {
+        if (test && !test(m)) return m;
+        redacted = true;
+        return "[redacted]";
+      });
+    };
+    try {
+      apply(PII_EMAIL_RE);
+      apply(PII_URL_RE);
+      apply(PII_CARD_RE, function (m) { var d = piiCountDigits(m); return d >= 13 && d <= 19; });
+      apply(PII_PHONE_RE, function (m) { return piiCountDigits(m) >= 7; });
+      apply(PII_TOKEN_RE);
+    } catch (e) { /* a Unicode-property engine gap must never throw */ }
+    return { text: out, redacted: redacted };
+  }
+  /** True when `raw` looks like PII (canonicalised first, so obfuscation is
+   * caught). Interest storage refuses any search for which this is true. */
+  function isLikelyPII(raw) {
+    return redactPII(canonicalizeForPII(raw)).redacted;
+  }
+
+  // ---- Phase 13.1: interest-based suggestions (CLIENT-ONLY, consent-gated) ----
+  // ONE localStorage key, versioned JSON, 90-day TTL, ~4KB cap. The server
+  // stores and logs NOTHING. Every read/write goes through the guarded helpers
+  // below, which require consentAllowsAnalytics(...) === true (fail-closed) and
+  // DELETE the entry whenever consent is absent. The pure helpers are testable
+  // without a DOM; the storage glue is the ONLY place that touches localStorage
+  // for this key.
+  var INTEREST_KEY = "boost_interest_v1";
+  var INTEREST_VERSION = 1;
+  var INTEREST_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+  var INTEREST_HALFLIFE_MS = 30 * 24 * 60 * 60 * 1000;
+  var INTEREST_MAX_RECENT = 10;
+  var INTEREST_RECENT_MAXLEN = 60;
+  var INTEREST_MAX_KEYS = 20;
+  var INTEREST_MAX_BYTES = 4096;
+
+  function interestEmpty(now) {
+    return { v: INTEREST_VERSION, ts: now || 0, enabled: true, recent: [], weights: {}, decayedAt: now || 0 };
+  }
+  /** Validate + bound a parsed interest object (defensive against tampering). */
+  function interestCanonical(parsed, now) {
+    if (!parsed || typeof parsed !== "object" || parsed.v !== INTEREST_VERSION) return interestEmpty(now);
+    var st = interestEmpty(now);
+    st.ts = typeof parsed.ts === "number" && isFinite(parsed.ts) ? parsed.ts : (now || 0);
+    st.enabled = parsed.enabled !== false;
+    st.decayedAt = typeof parsed.decayedAt === "number" && isFinite(parsed.decayedAt) ? parsed.decayedAt : st.ts;
+    if (Array.isArray(parsed.recent)) {
+      var seen = {};
+      for (var i = 0; i < parsed.recent.length && st.recent.length < INTEREST_MAX_RECENT; i++) {
+        var q = parsed.recent[i];
+        if (typeof q !== "string") continue;
+        q = q.slice(0, INTEREST_RECENT_MAXLEN);
+        var k = q.toLowerCase();
+        if (q.length === 0 || seen[k]) continue;
+        seen[k] = true;
+        st.recent.push(q);
+      }
+    }
+    if (parsed.weights && typeof parsed.weights === "object") {
+      var keys = Object.keys(parsed.weights);
+      for (var j = 0; j < keys.length; j++) {
+        var kk = keys[j];
+        var val = Math.floor(Number(parsed.weights[kk]));
+        if (typeof kk === "string" && kk.length > 0 && kk.length <= 80 && isFinite(val) && val > 0) {
+          st.weights[kk] = val;
+        }
+      }
+      st.weights = interestEvict(st.weights);
+    }
+    return st;
+  }
+  /** Keep at most INTEREST_MAX_KEYS weights, evicting the lowest (ties: by key
+   * name, deterministic). Returns a new object. */
+  function interestEvict(weights) {
+    var keys = Object.keys(weights);
+    if (keys.length <= INTEREST_MAX_KEYS) return weights;
+    keys.sort(function (a, b) { return (weights[b] - weights[a]) || (a < b ? -1 : a > b ? 1 : 0); });
+    var out = {};
+    for (var i = 0; i < INTEREST_MAX_KEYS; i++) out[keys[i]] = weights[keys[i]];
+    return out;
+  }
+  /** Halve every weight once per elapsed 30-day half-life; drop zeros. Pure. */
+  function interestDecay(state, now) {
+    var st = interestCanonical(state, now);
+    var elapsed = now - st.decayedAt; // decayedAt is always a number (0 = epoch)
+    if (!(elapsed >= INTEREST_HALFLIFE_MS)) return st;
+    var halvings = Math.floor(elapsed / INTEREST_HALFLIFE_MS);
+    var factor = Math.pow(2, halvings);
+    var next = {};
+    var keys = Object.keys(st.weights);
+    for (var i = 0; i < keys.length; i++) {
+      var v = Math.floor(st.weights[keys[i]] / factor);
+      if (v > 0) next[keys[i]] = v;
+    }
+    st.weights = next;
+    st.decayedAt = st.decayedAt + halvings * INTEREST_HALFLIFE_MS;
+    return st;
+  }
+  /** Add a recent search (dedup ci, cap 10, len 60). Returns a NEW state, or the
+   * input unchanged when the query is empty or looks like PII. Pure. */
+  function interestAddSearch(state, query, now) {
+    var st = interestCanonical(state, now);
+    var q = (query == null ? "" : String(query)).trim();
+    if (q.length === 0) return st;
+    if (q.length > INTEREST_RECENT_MAXLEN) q = q.slice(0, INTEREST_RECENT_MAXLEN);
+    if (isLikelyPII(q)) return st; // never store PII searches
+    var lk = q.toLowerCase();
+    var out = [q];
+    for (var i = 0; i < st.recent.length && out.length < INTEREST_MAX_RECENT; i++) {
+      if (st.recent[i].toLowerCase() !== lk) out.push(st.recent[i]);
+    }
+    st.recent = out;
+    st.ts = now;
+    return st;
+  }
+  /** Bump interest weights from a CLICKED product's facets (productType, vendor,
+   * tags). Integer counters; keys namespaced so "type:Shoe" ≠ "vendor:Shoe".
+   * Caps at 20 keys (evict lowest). Returns a NEW state. Pure. */
+  function interestAddClick(state, product, now) {
+    var st = interestCanonical(state, now);
+    if (!product || typeof product !== "object") return st;
+    var bump = function (prefix, raw) {
+      if (raw == null) return;
+      var s = String(raw).trim().slice(0, 72);
+      if (s.length === 0) return;
+      var key = prefix + ":" + s;
+      st.weights[key] = (st.weights[key] || 0) + 1;
+    };
+    bump("type", product.productType);
+    bump("vendor", product.vendor);
+    var tags = product.tags;
+    if (Array.isArray(tags)) for (var i = 0; i < tags.length && i < 10; i++) bump("tag", tags[i]);
+    st.weights = interestEvict(st.weights);
+    st.ts = now;
+    return st;
+  }
+  /** Deterministic, STABLE re-order of suggestion items by interest weight.
+   * NEVER adds or removes an item — only re-orders. `scoreOf(item)` returns the
+   * item's weight contribution (sum of its facet weights). Pure. */
+  function interestReorder(items, scoreOf) {
+    var arr = Array.isArray(items) ? items.slice() : [];
+    var score = typeof scoreOf === "function" ? scoreOf : function () { return 0; };
+    var decorated = arr.map(function (it, i) { return { it: it, i: i, s: Number(score(it)) || 0 }; });
+    decorated.sort(function (a, b) { return (b.s - a.s) || (a.i - b.i); }); // stable: original index breaks ties
+    return decorated.map(function (d) { return d.it; });
+  }
+
+  // Storage glue — the ONLY code that touches the interest localStorage key.
+  function interestRead(privacyApi, now, storage) {
+    var ls = storage || (typeof window !== "undefined" ? window.localStorage : null);
+    var t = typeof now === "number" ? now : Date.now();
+    if (!consentAllowsAnalytics(privacyApi)) {
+      try { if (ls) ls.removeItem(INTEREST_KEY); } catch (e) {}
+      return interestEmpty(t);
+    }
+    try {
+      if (!ls) return interestEmpty(t);
+      var raw = ls.getItem(INTEREST_KEY);
+      if (!raw) return interestEmpty(t);
+      var parsed = JSON.parse(raw);
+      var st = interestCanonical(parsed, t);
+      if ((t - st.ts) > INTEREST_TTL_MS) { // expired → wipe (ts is a number)
+        try { ls.removeItem(INTEREST_KEY); } catch (e2) {}
+        return interestEmpty(t);
+      }
+      return interestDecay(st, t);
+    } catch (e) { return interestEmpty(t); }
+  }
+  function interestWrite(privacyApi, state, storage) {
+    var ls = storage || (typeof window !== "undefined" ? window.localStorage : null);
+    if (!consentAllowsAnalytics(privacyApi)) {
+      try { if (ls) ls.removeItem(INTEREST_KEY); } catch (e) {}
+      return false;
+    }
+    try {
+      if (!ls) return false;
+      var st = interestCanonical(state, state && state.ts);
+      var json = JSON.stringify(st);
+      // Bound the stored size: trim recent then weights until under the cap.
+      while (json.length > INTEREST_MAX_BYTES && st.recent.length > 0) {
+        st.recent.pop(); json = JSON.stringify(st);
+      }
+      while (json.length > INTEREST_MAX_BYTES && Object.keys(st.weights).length > 0) {
+        var ks = Object.keys(st.weights);
+        ks.sort(function (a, b) { return (st.weights[a] - st.weights[b]) || (a < b ? -1 : 1); });
+        delete st.weights[ks[0]]; json = JSON.stringify(st);
+      }
+      if (json.length > INTEREST_MAX_BYTES) return false;
+      ls.setItem(INTEREST_KEY, json);
+      return true;
+    } catch (e) { return false; }
+  }
+  function interestClear(storage) {
+    var ls = storage || (typeof window !== "undefined" ? window.localStorage : null);
+    try { if (ls) ls.removeItem(INTEREST_KEY); } catch (e) {}
+  }
+
+  // ---- Phase 13.2: locale resolver + Intl plural/date (pure) ----
+  // Mirrors app/lib/i18n/locales.ts. The app sets lang/dir on ITS OWN root only
+  // (never <html>) so the extension can be RTL on an LTR theme.
+  var SUPPORTED_LOCALES = [
+    { code: "en", dir: "ltr" }, { code: "fr", dir: "ltr" }, { code: "de", dir: "ltr" },
+    { code: "es", dir: "ltr" }, { code: "it", dir: "ltr" }, { code: "pt-BR", dir: "ltr" },
+    { code: "nl", dir: "ltr" }, { code: "ja", dir: "ltr" }, { code: "ar", dir: "rtl" },
+  ];
+  function baseLanguage(code) { return String(code).split("-")[0].toLowerCase(); }
+  function resolveLocale(requested, supported, fallback) {
+    var list = supported || SUPPORTED_LOCALES;
+    var fb = fallback || "en";
+    if (typeof requested !== "string") return fb;
+    var req = requested.trim();
+    if (req.length === 0 || req.length > 35) return fb;
+    var lower = req.toLowerCase();
+    for (var i = 0; i < list.length; i++) if (list[i].code.toLowerCase() === lower) return list[i].code;
+    var base = baseLanguage(req);
+    for (var j = 0; j < list.length; j++) if (baseLanguage(list[j].code) === base) return list[j].code;
+    return fb;
+  }
+  function localeDir(code) {
+    for (var i = 0; i < SUPPORTED_LOCALES.length; i++) if (SUPPORTED_LOCALES[i].code === code) return SUPPORTED_LOCALES[i].dir;
+    return "ltr";
+  }
+  /** Set lang + dir on the APP's OWN root element only. Never touches <html>. */
+  function applyLocaleToRoot(rootEl, code) {
+    if (!rootEl || !rootEl.setAttribute) return;
+    try { rootEl.setAttribute("lang", code); rootEl.setAttribute("dir", localeDir(code)); } catch (e) {}
+  }
+  /** CLDR plural category for n in locale (Intl.PluralRules), default "other". */
+  function pluralCategory(locale, n) {
+    try { return new Intl.PluralRules(locale || undefined).select(Number(n)); }
+    catch (e) { return Number(n) === 1 ? "one" : "other"; }
+  }
+  /** Format a count with pluralised forms, NO string concatenation of the noun:
+   * `forms` maps CLDR categories ({one, other, zero?, two?, few?, many?}) to a
+   * template containing {count}. {count} is replaced by Intl.NumberFormat. */
+  function formatCount(n, locale, forms) {
+    var num = Number(n) || 0;
+    var cat = pluralCategory(locale, num);
+    var tmpl = (forms && (forms[cat] || forms.other)) || "{count}";
+    var numStr;
+    try { numStr = new Intl.NumberFormat(locale || undefined).format(num); } catch (e) { numStr = String(num); }
+    return tmpl.replace(/\{count\}/g, numStr);
+  }
+  /** Format a date in the visitor's locale + an explicit IANA time zone (shop tz
+   * for pre-order ship dates / countdown ends). Returns "" on any failure. */
+  function formatDateInTz(date, locale, timeZone, opts) {
+    try {
+      var d = (date instanceof Date) ? date : new Date(date);
+      if (isNaN(d.getTime())) return "";
+      var o = opts || { year: "numeric", month: "short", day: "numeric" };
+      if (timeZone) o = Object.assign({ timeZone: timeZone }, o);
+      return new Intl.DateTimeFormat(locale || undefined, o).format(d);
+    } catch (e) { return ""; }
+  }
+
+  // ---- Phase 13.3: client price hydration (same-origin /products/<handle>.js)
+  // READ-ONLY, no scope, no server change. Parse defensively (integers in minor
+  // units), reformat via Intl in the storefront's active currency. This is a
+  // DISPLAY reformat of shop-currency amounts — true presentment conversion is
+  // Requires Verification on a real market-enabled store. Falls back SILENTLY to
+  // the indexed price (never a mislabelled number).
+  var HYDRATE_MAX_CARDS = 12;
+  var HYDRATE_CONCURRENCY = 4;
+  var HYDRATE_TIMEOUT_MS = 1500;
+
+  /** minor-unit exponent for a currency (via Intl), default 2; JPY→0 etc. */
+  function currencyFractionDigits(currency) {
+    try {
+      var f = new Intl.NumberFormat(undefined, { style: "currency", currency: currency });
+      var d = f.resolvedOptions().maximumFractionDigits;
+      return typeof d === "number" ? d : 2;
+    } catch (e) { return 2; }
+  }
+  /** Format an integer minor-unit amount as currency in the active locale. */
+  function formatMoneyMinor(amountMinor, currency, locale) {
+    if (amountMinor == null || !isFinite(Number(amountMinor))) return "";
+    var digits = currencyFractionDigits(currency);
+    var major = Number(amountMinor) / Math.pow(10, digits);
+    try {
+      if (currency) return new Intl.NumberFormat(locale || undefined, { style: "currency", currency: currency }).format(major);
+    } catch (e) {}
+    return String(major);
+  }
+  /** Parse a Shopify product.js object → {minMinor, maxMinor} integer minor
+   * units, or null. Defensive: ignores anything non-integer/negative. */
+  function parseProductJsPrices(obj) {
+    if (!obj || typeof obj !== "object") return null;
+    var isMinor = function (n) { return typeof n === "number" && isFinite(n) && n >= 0 && Math.floor(n) === n; };
+    var lo = null, hi = null;
+    if (isMinor(obj.price_min) && isMinor(obj.price_max)) { lo = obj.price_min; hi = obj.price_max; }
+    else if (Array.isArray(obj.variants)) {
+      for (var i = 0; i < obj.variants.length; i++) {
+        var p = obj.variants[i] && obj.variants[i].price;
+        if (isMinor(p)) { lo = (lo == null || p < lo) ? p : lo; hi = (hi == null || p > hi) ? p : hi; }
+      }
+    } else if (isMinor(obj.price)) { lo = hi = obj.price; }
+    if (lo == null) return null;
+    return { minMinor: lo, maxMinor: hi == null ? lo : hi };
+  }
+  /** Full card price string from a parsed product.js, or null to keep the
+   * indexed fallback. */
+  function hydratedPriceString(obj, currency, locale) {
+    var p = parseProductJsPrices(obj);
+    if (!p) return null;
+    var lo = formatMoneyMinor(p.minMinor, currency, locale);
+    if (!lo) return null;
+    if (p.maxMinor !== p.minMinor) {
+      var hi = formatMoneyMinor(p.maxMinor, currency, locale);
+      if (hi) return lo + "–" + hi;
+    }
+    return lo;
+  }
+
+  /**
+   * Bounded-concurrency hydration orchestrator (pure glue; fetchJs + state
+   * injected so it is unit-testable without a DOM/network). `handles` is capped
+   * at 12. `fetchJs(handle)` returns a Promise of the parsed product.js (or
+   * rejects/null on any failure). Per-handle timeout (race against a timer).
+   * `cache` is a Map shared across calls (session cache). `aborted()` returns
+   * true to stop (navigation). `onResult(handle, obj|null)` is called per handle
+   * (null = silent fallback). Resolves when all done. Never throws.
+   */
+  function runHydration(handles, fetchJs, opts, onResult) {
+    opts = opts || {};
+    var list = (Array.isArray(handles) ? handles : []).slice(0, HYDRATE_MAX_CARDS);
+    var concurrency = opts.concurrency || HYDRATE_CONCURRENCY;
+    var timeoutMs = opts.timeoutMs || HYDRATE_TIMEOUT_MS;
+    var cache = opts.cache || new Map();
+    var aborted = typeof opts.aborted === "function" ? opts.aborted : function () { return false; };
+    var setTimeoutFn = opts.setTimeout || (typeof setTimeout !== "undefined" ? setTimeout : null);
+    var clearTimeoutFn = opts.clearTimeout || (typeof clearTimeout !== "undefined" ? clearTimeout : null);
+    var emit = typeof onResult === "function" ? onResult : function () {};
+    var idx = 0;
+
+    function withTimeout(promise) {
+      if (!setTimeoutFn) return Promise.resolve(promise);
+      return new Promise(function (resolve) {
+        var done = false;
+        var timer = setTimeoutFn(function () { if (!done) { done = true; resolve(null); } }, timeoutMs);
+        Promise.resolve(promise).then(function (v) {
+          if (!done) { done = true; if (clearTimeoutFn) clearTimeoutFn(timer); resolve(v); }
+        }, function () {
+          if (!done) { done = true; if (clearTimeoutFn) clearTimeoutFn(timer); resolve(null); }
+        });
+      });
+    }
+    function one(handle) {
+      if (aborted()) { emit(handle, null); return Promise.resolve(); }
+      if (cache.has(handle)) { emit(handle, cache.get(handle)); return Promise.resolve(); }
+      var p;
+      try { p = fetchJs(handle); } catch (e) { p = Promise.resolve(null); }
+      return withTimeout(p).then(function (obj) {
+        if (aborted()) { emit(handle, null); return; }
+        var val = (obj && typeof obj === "object") ? obj : null;
+        cache.set(handle, val);
+        emit(handle, val);
+      });
+    }
+    function worker() {
+      if (aborted() || idx >= list.length) return Promise.resolve();
+      var h = list[idx++];
+      return one(h).then(worker);
+    }
+    var workers = [];
+    for (var w = 0; w < Math.min(concurrency, list.length); w++) workers.push(worker());
+    return Promise.all(workers).then(function () {});
+  }
+
   return {
     MAX_QUERY_LEN: MAX_QUERY_LEN,
     MAX_FILTER_VALUES: MAX_FILTER_VALUES,
@@ -548,5 +956,40 @@
     isNumericId: isNumericId,
     newSessionId: newSessionId,
     cleanAnalyticsEvent: cleanAnalyticsEvent,
+    // Phase 13.1 — PII guard + interest suggestions (client-only, consent-gated)
+    canonicalizeForPII: canonicalizeForPII,
+    redactPII: redactPII,
+    isLikelyPII: isLikelyPII,
+    INTEREST_KEY: INTEREST_KEY,
+    INTEREST_MAX_RECENT: INTEREST_MAX_RECENT,
+    INTEREST_MAX_KEYS: INTEREST_MAX_KEYS,
+    interestEmpty: interestEmpty,
+    interestCanonical: interestCanonical,
+    interestEvict: interestEvict,
+    interestDecay: interestDecay,
+    interestAddSearch: interestAddSearch,
+    interestAddClick: interestAddClick,
+    interestReorder: interestReorder,
+    interestRead: interestRead,
+    interestWrite: interestWrite,
+    interestClear: interestClear,
+    // Phase 13.3 — client price hydration (same-origin product.js)
+    HYDRATE_MAX_CARDS: HYDRATE_MAX_CARDS,
+    HYDRATE_CONCURRENCY: HYDRATE_CONCURRENCY,
+    HYDRATE_TIMEOUT_MS: HYDRATE_TIMEOUT_MS,
+    currencyFractionDigits: currencyFractionDigits,
+    formatMoneyMinor: formatMoneyMinor,
+    parseProductJsPrices: parseProductJsPrices,
+    hydratedPriceString: hydratedPriceString,
+    runHydration: runHydration,
+    // Phase 13.2 — locale resolver + Intl plural/date
+    SUPPORTED_LOCALES: SUPPORTED_LOCALES,
+    baseLanguage: baseLanguage,
+    resolveLocale: resolveLocale,
+    localeDir: localeDir,
+    applyLocaleToRoot: applyLocaleToRoot,
+    pluralCategory: pluralCategory,
+    formatCount: formatCount,
+    formatDateInTz: formatDateInTz,
   };
 });

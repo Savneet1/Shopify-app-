@@ -38,6 +38,10 @@
     var base = cfg.proxyBase || "/apps/search";
     var perPage = Math.max(1, Math.min(60, Math.floor(Number(cfg.perPage) || 24)));
     var nlDefault = cfg.nlEnabled !== false;
+    // Phase 13.2: resolve the active locale and set lang/dir on the APP's OWN
+    // root only (never <html>) — so the app can be RTL (ar) on an LTR theme.
+    var appLocale = Core.resolveLocale(cfg.locale);
+    Core.applyLocaleToRoot(root, appLocale);
 
     // Scaffold: controls, live region, facets (drawer on mobile), grid.
     root.textContent = "";
@@ -134,7 +138,15 @@
 
     function withToken(url) {
       var abt = currentToken();
-      return abt ? url + (url.indexOf("?") >= 0 ? "&" : "?") + "abt=" + encodeURIComponent(abt) : url;
+      if (abt) url += (url.indexOf("?") >= 0 ? "&" : "?") + "abt=" + encodeURIComponent(abt);
+      return withLocaleHint(url);
+    }
+    // Phase 13.2/13.3: send the UNTRUSTED locale hint so the server can scope
+    // stop-words/synonyms/redirects. The App Proxy does NOT pass locale, so the
+    // storefront must. The server validates + ignores anything malformed.
+    function withLocaleHint(url) {
+      if (!appLocale) return url;
+      return url + (url.indexOf("?") >= 0 ? "&" : "?") + "locale=" + encodeURIComponent(appLocale);
     }
 
     function beacon(experimentId, variant, type) {
@@ -302,7 +314,11 @@
     function renderToolbar(data) {
       clear(toolbar);
       var count = el("p", "boost-results__count");
-      count.textContent = String(data.total || 0) + " " + t(cfg, "results", "results");
+      // Phase 13.2: pluralise via Intl.PluralRules (no manual concatenation).
+      count.textContent = Core.formatCount(data.total || 0, locale, {
+        one: t(cfg, "countOne", "{count} result"),
+        other: t(cfg, "countOther", "{count} results"),
+      });
       toolbar.appendChild(count);
 
       var sortWrap = el("label", "boost-results__sort");
@@ -323,12 +339,62 @@
     }
 
     // ---- grid ----
-    var locale = (document.documentElement && document.documentElement.lang) || undefined;
+    var locale = appLocale;
     function money(p) {
       return Core.formatPrice(p.priceMin, p.priceMax, cfg.currency, locale);
     }
+
+    // Phase 13.3: client price hydration. OFF unless the merchant enabled it.
+    // Session cache + an abort token bumped on every new render/navigation.
+    var HANDLE_RE = /^[a-z0-9][a-z0-9_-]{0,98}[a-z0-9]$/;
+    var hydrateCache = new Map();
+    var hydrateToken = 0;
+    function shopRoot() {
+      try { return (window.Shopify && window.Shopify.routes && window.Shopify.routes.root) || "/"; }
+      catch (e) { return "/"; }
+    }
+    function productJsPath(handle) {
+      if (!HANDLE_RE.test(String(handle))) return null;
+      var r = shopRoot();
+      if (String(r).charAt(0) !== "/" || String(r).charAt(1) === "/") r = "/";
+      if (r.charAt(r.length - 1) !== "/") r += "/";
+      return r + "products/" + encodeURIComponent(handle) + ".js"; // same-origin, no scope
+    }
+    function fetchProductJs(handle) {
+      var path = productJsPath(handle);
+      if (!path) return Promise.resolve(null);
+      return fetch(path, { headers: { Accept: "application/json" }, credentials: "same-origin" })
+        .then(function (res) {
+          if (res.status === 404) return { __notFound: true }; // card hidden ONLY when hydration on
+          if (!res.ok) return null;
+          return res.json().catch(function () { return null; });
+        })
+        .catch(function () { return null; });
+    }
+    function hydrateGrid(targets) {
+      if (cfg.priceHydration !== true || targets.length === 0) return;
+      hydrateToken++;
+      var myToken = hydrateToken;
+      var handles = targets.map(function (x) { return x.handle; });
+      var byHandle = {};
+      targets.forEach(function (x) { byHandle[x.handle] = x; });
+      Core.runHydration(handles, fetchProductJs, {
+        cache: hydrateCache,
+        aborted: function () { return myToken !== hydrateToken; },
+      }, function (handle, obj) {
+        var tgt = byHandle[handle];
+        if (!tgt || myToken !== hydrateToken) return;
+        if (obj && obj.__notFound) { if (tgt.li && tgt.li.parentNode) tgt.li.hidden = true; return; }
+        if (!obj) return; // silent fallback to the indexed price
+        var str = Core.hydratedPriceString(obj, cfg.activeCurrency || cfg.currency, locale);
+        if (str && tgt.priceEl) tgt.priceEl.textContent = str; // reformat in active currency
+      });
+    }
+
     function renderGrid(data) {
       clear(grid);
+      hydrateToken++; // abort any in-flight hydration from a previous render
+      var hydrateTargets = [];
       var products = (data && Array.isArray(data.products)) ? data.products : [];
       products.forEach(function (p) {
         var li = el("li", "boost-card");
@@ -354,7 +420,20 @@
         var meta = el("span", "boost-card__meta");
         if (p.vendor) meta.appendChild(el("span", "boost-card__vendor", p.vendor));
         var pr = money(p);
-        if (pr) meta.appendChild(el("span", "boost-card__price", pr));
+        var priceEl = null;
+        if (pr) { priceEl = el("span", "boost-card__price", pr); meta.appendChild(priceEl); }
+        // Phase 13.3: queue this card for optional price hydration (≤12, OFF by
+        // default). The indexed price is already shown; hydration only reformats.
+        if (cfg.priceHydration === true && priceEl && p.handle && hydrateTargets.length < Core.HYDRATE_MAX_CARDS) {
+          hydrateTargets.push({ handle: p.handle, priceEl: priceEl, li: li });
+        }
+        // Phase 13.5: additive aggregate range on a PARENT combined-listing card
+        // (textContent via Core.formatPrice; only when the payload carries it →
+        // byte-identical for shops with no combined listings).
+        if (p.combined && p.combined.role === "PARENT" && p.combined.priceMin != null) {
+          var range = Core.formatPrice(p.combined.priceMin, p.combined.priceMax, cfg.currency, locale);
+          if (range) meta.appendChild(el("span", "boost-card__combined-range", range));
+        }
         if (!p.available) meta.appendChild(el("span", "boost-card__oos", t(cfg, "outOfStock", "Out of stock")));
         a.appendChild(meta);
         // A click on a result is a click for every active experiment variant.
@@ -370,6 +449,7 @@
         grid.appendChild(empty);
         renderSuggestions(data);
       }
+      hydrateGrid(hydrateTargets); // no-op unless the merchant enabled hydration
     }
 
     function renderSuggestions(data) {

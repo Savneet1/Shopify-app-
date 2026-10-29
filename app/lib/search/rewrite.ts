@@ -2,7 +2,7 @@ import type { Exec } from "~/lib/db/executor";
 import { tokenize, isFuzzable } from "./text";
 import { fold, termExists, fuzzyCandidates } from "./vocabulary";
 import { getEffectiveStopwords, applyStopwords } from "./stopwords";
-import { listSynonyms, expandQuery } from "./synonyms";
+import { listSynonymsForLocale, expandQuery } from "./synonyms";
 
 /**
  * Query planner (Phase 5). Turns a raw query into an effective plan by:
@@ -52,6 +52,7 @@ export async function buildPlan(
   shopId: string,
   indexVersionId: string,
   rawQuery: string,
+  locale: string | null = null,
 ): Promise<QueryPlan> {
   const rawTokens = tokenize(rawQuery);
   if (rawTokens.length === 0) {
@@ -61,7 +62,8 @@ export async function buildPlan(
     };
   }
 
-  const stop = await getEffectiveStopwords(exec, shopId);
+  // Phase 13.2: locale-scoped stop words + synonyms (global rows always apply).
+  const stop = await getEffectiveStopwords(exec, shopId, locale);
   const { kept, removed, allStop } = applyStopwords(rawTokens, stop);
 
   const positions: PlanPosition[] = [];
@@ -83,7 +85,7 @@ export async function buildPlan(
   }
 
   const foldedKept = kept.map(fold);
-  const synonyms = await listSynonyms(exec, shopId);
+  const synonyms = await listSynonymsForLocale(exec, shopId, locale);
   const { expansions, truncated } = expandQuery(foldedKept, synonyms);
   const synonymExpansions = expansions.map((e) => e.tokens.map(fold)).filter((e) => e.length > 0);
 

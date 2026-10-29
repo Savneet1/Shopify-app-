@@ -1,5 +1,6 @@
 import type { Exec } from "~/lib/db/executor";
 import { Params } from "~/lib/search/filters";
+import { combinedHidePredicate } from "~/lib/search/match";
 import type { ProductRef } from "./refs";
 import { partitionRefs } from "./refs";
 
@@ -94,6 +95,8 @@ export interface ContentOptions {
   excludeProductIds?: string[];
   /** Include the per-component score breakdown (admin preview). */
   explain?: boolean;
+  /** Phase 13.5 combined-listing hide mode (role excluded from candidates). */
+  combinedHide?: "child" | "parent";
 }
 
 function clampLimit(n: number): number {
@@ -198,7 +201,7 @@ export async function cardsByProductIds(
   shopId: string,
   versionId: string,
   productIds: string[],
-  opts: { includeOutOfStock: boolean; hideIds: string[] },
+  opts: { includeOutOfStock: boolean; hideIds: string[]; combinedHide?: "child" | "parent" },
 ): Promise<ContentCard[]> {
   if (productIds.length === 0) return [];
   const pb = new Params();
@@ -214,6 +217,8 @@ export async function cardsByProductIds(
   ];
   if (!opts.includeOutOfStock) parts.push(`available = true`);
   if (opts.hideIds.length > 0) parts.push(`product_id <> ALL(${pb.add(opts.hideIds)}::uuid[])`);
+  const cardCh = combinedHidePredicate(opts.combinedHide);
+  if (cardCh) parts.push(cardCh);
   const rows = await exec.rows<any>(
     `SELECT product_id, shopify_product_gid AS gid, doc
      FROM product_search_doc WHERE ${parts.join(" AND ")}`,
@@ -263,6 +268,8 @@ export async function recommendContent(
   if (opts.excludeProductIds && opts.excludeProductIds.length > 0) {
     candParts.push(`d.product_id <> ALL(${pb.add(opts.excludeProductIds)}::uuid[])`);
   }
+  const candCh = combinedHidePredicate(opts.combinedHide, "d.combined_role");
+  if (candCh) candParts.push(candCh);
 
   const pCollectionCap = pb.add(w.collectionCap);
   const pTagCap = pb.add(w.tagCap);

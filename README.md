@@ -2,9 +2,10 @@
 
 A production-grade, multi-tenant Shopify **Search, Filter & Discovery** app built
 on the current official **Shopify React Router** template, with PostgreSQL as the
-only data/search engine. This repository is at **Phase 12.2 (CI-parity fix batch:
-hermetic tests + `npm run test:ci-parity`, workflow env parity, save-time SMTP
-destination feedback, lost-confirmation sweeper)**.
+only data/search engine. This repository is at **Phase 13 (localization & markets:
+9 UI locales incl. RTL Arabic, locale-scoped search config, client-side interest
+suggestions, client price hydration, read-only combined listings, and an honest
+B2B-limitations stance)**.
 
 > Phase gating is enforced. Implemented so far: Phase 1 (foundation: auth,
 > embedded shell, multi-tenancy + RLS, privacy webhooks, billing), Phase 2/2.1
@@ -81,11 +82,22 @@ destination feedback, lost-confirmation sweeper)**.
 > `.env` — an `npm run test:ci-parity` harness that runs the suite in a scrubbed
 > environment derived from the CI workflow's own `env:` block with a drift guard,
 > save-time SMTP destination feedback for private/`.local` hosts, and a
-> maintenance-tick sweeper that recovers stranded double-opt-in confirmations).
+> maintenance-tick sweeper that recovers stranded double-opt-in confirmations),
+> Phase 13 (**localization & markets**: storefront UI in 9 locales — en, fr, de,
+> es, it, pt-BR, nl, ja, and RTL ar — with full key parity and Intl plural/date
+> formatting; a pure locale resolver and optional locale-scoped synonyms / stop
+> words / redirects; **client-only, consent-gated** interest suggestions that the
+> server never stores or logs; **opt-in client price hydration** from same-origin
+> `/products/<handle>.js`; **read-only combined listings** with a per-shop
+> hide-parents/hide-children mode applied as one hard rule across every surface;
+> and a documented, honest B2B stance — no Companies/Customers scopes, no use of
+> the logged-in customer id. **Live beacon/theme rendering + a real Markets store
+> = Requires Verification.**).
 > Later phases to
 > follow. See `docs/PHASE*.md`. Stack unchanged: no Redis, no external search/AI/analytics,
-> PostgreSQL-only; scopes = `read_products` (Phase 11 adds no scope; purchase
-> attribution / Web Pixel / real bundle discounts = Requires Verification).
+> PostgreSQL-only; scopes = `read_products` (Phases 11–13 add no scope; purchase
+> attribution / Web Pixel / real bundle discounts / Markets prices / B2B pricing /
+> native-reviewed translations = Requires Verification).
 
 ## Stack (Phase 1)
 

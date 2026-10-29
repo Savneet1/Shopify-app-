@@ -9,6 +9,7 @@ import {
 import { trending } from "./signals";
 import { frequentlyBoughtTogether, DEFAULT_MIN_SUPPORT, DEFAULT_MIN_CONFIDENCE, type FbtRanking } from "./cooccurrence";
 import { loadSettings, type RecommendationSettings } from "./settings";
+import { loadCombinedMode, combinedHideFor } from "~/lib/search/combined";
 
 /**
  * Phase 9 recommendations orchestrator. One entry point for every type; applies
@@ -53,12 +54,13 @@ function clampLimit(n: unknown): number {
 async function contentFor(
   exec: Exec, shopId: string, versionId: string, kind: ContentKind, seedRaw: unknown,
   limit: number, settings: RecommendationSettings, hideIds: string[], excludeProductIds: string[], explain: boolean,
+  combinedHide?: "child" | "parent",
 ): Promise<ContentCard[]> {
   const ref = classifyRef(seedRaw);
   if (!ref) return [];
   return recommendContent(exec, shopId, versionId, [ref], {
     kind, limit, includeOutOfStock: settings.includeOutOfStock,
-    diversifyPerVendor: settings.diversifyPerVendor, hideIds, excludeProductIds, explain,
+    diversifyPerVendor: settings.diversifyPerVendor, hideIds, excludeProductIds, explain, combinedHide,
   });
 }
 
@@ -87,6 +89,8 @@ export async function getRecommendations(
   // Phase 8 GLOBAL hide rules (q="" / collection=null → only global hides match).
   const merch = await loadMerchPlan(exec, shopId, versionId, { q: "", collectionGid: null, now, token: null });
   const hideIds = merch.hideIds;
+  // Phase 13.5 combined-listing hide mode (applies to every recommendation shelf).
+  const combinedHide = combinedHideFor(await loadCombinedMode(exec, shopId));
 
   // Recently-viewed (client-supplied) → product ids, used as exclusions and as
   // the source for type=recent. The server stores NOTHING.
@@ -101,19 +105,19 @@ export async function getRecommendations(
   switch (req.type) {
     case "similar": {
       if (!settings.similarEnabled) return empty("disabled");
-      const products = await contentFor(exec, shopId, versionId, "similar", req.seed, limit, settings, hideIds, recentIds, explain);
+      const products = await contentFor(exec, shopId, versionId, "similar", req.seed, limit, settings, hideIds, recentIds, explain, combinedHide);
       return { type: "similar", seed: seedEcho, products, fellBackTo: null, reason: products.length ? null : "empty" };
     }
     case "related": {
       if (!settings.relatedEnabled) return empty("disabled");
-      const products = await contentFor(exec, shopId, versionId, "related", req.seed, limit, settings, hideIds, recentIds, explain);
+      const products = await contentFor(exec, shopId, versionId, "related", req.seed, limit, settings, hideIds, recentIds, explain, combinedHide);
       return { type: "related", seed: seedEcho, products, fellBackTo: null, reason: products.length ? null : "empty" };
     }
     case "trending": {
       if (!settings.trendingEnabled) return empty("disabled");
       const products = await trending(exec, shopId, versionId, {
         limit, includeOutOfStock: settings.includeOutOfStock, hideIds,
-        excludeProductIds: baseExclude, halfLifeDays: settings.trendingHalfLifeDays, now,
+        excludeProductIds: baseExclude, halfLifeDays: settings.trendingHalfLifeDays, now, combinedHide,
       });
       return { type: "trending", seed: seedEcho, products, fellBackTo: null, reason: products.length ? null : "empty" };
     }
@@ -125,14 +129,14 @@ export async function getRecommendations(
         ? await frequentlyBoughtTogether(exec, shopId, versionId, req.seed, {
             limit, minSupport: DEFAULT_MIN_SUPPORT, minConfidence: DEFAULT_MIN_CONFIDENCE,
             ranking: req.fbtRanking === "lift" ? "lift" : "confidence",
-            includeOutOfStock: settings.includeOutOfStock, hideIds, excludeProductIds: recentIds,
+            includeOutOfStock: settings.includeOutOfStock, hideIds, excludeProductIds: recentIds, combinedHide,
           })
         : [];
       if (runFbt.length > 0) {
         return { type: "fbt", seed: seedEcho, products: runFbt, fellBackTo: null, reason: null };
       }
       if (settings.fbtFallbackRelated && settings.relatedEnabled) {
-        const rel = await contentFor(exec, shopId, versionId, "related", req.seed, limit, settings, hideIds, recentIds, explain);
+        const rel = await contentFor(exec, shopId, versionId, "related", req.seed, limit, settings, hideIds, recentIds, explain, combinedHide);
         return { type: "fbt", seed: seedEcho, products: rel, fellBackTo: "related", reason: settings.fbtEnabled ? "fbt-no-data" : "fbt-disabled" };
       }
       return empty(settings.fbtEnabled ? "fbt-no-data" : "fbt-disabled");
@@ -143,7 +147,7 @@ export async function getRecommendations(
       // current seed. Server stores nothing — the ids came from the request.
       const ids = recentIds.filter((id) => id !== seedId).slice(0, limit);
       const products = await cardsByProductIds(exec, shopId, versionId, ids, {
-        includeOutOfStock: settings.includeOutOfStock, hideIds,
+        includeOutOfStock: settings.includeOutOfStock, hideIds, combinedHide,
       });
       return { type: "recent", seed: seedEcho, products, fellBackTo: null, reason: products.length ? null : "empty" };
     }

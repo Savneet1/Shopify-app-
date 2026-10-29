@@ -25,6 +25,7 @@ export interface RedirectRow {
   id: string;
   query_normalized: string;
   destination: string;
+  locale?: string | null;
 }
 
 /**
@@ -74,7 +75,7 @@ async function shopDomainOf(exec: Exec, shopId: string): Promise<string> {
 
 export async function listRedirects(exec: Exec, shopId: string): Promise<RedirectRow[]> {
   return exec.rows<RedirectRow>(
-    `SELECT id, query_normalized, destination FROM search_redirect WHERE shop_id=$1::uuid ORDER BY query_normalized`,
+    `SELECT id, query_normalized, destination, locale FROM search_redirect WHERE shop_id=$1::uuid ORDER BY query_normalized`,
     [shopId],
   );
 }
@@ -84,6 +85,7 @@ export async function addRedirect(
   shopId: string,
   query: string,
   destination: string,
+  locale: string | null = null,
 ): Promise<RedirectRow> {
   const qn = normalizeQuery(query);
   if (qn.length === 0) throw new RedirectValidationError("query is empty after normalisation");
@@ -97,12 +99,14 @@ export async function addRedirect(
     throw new RedirectValidationError(`redirect limit reached (${MAX_REDIRECTS_PER_SHOP})`);
   }
 
+  // Conflict target matches the (shop_id, query_normalized, COALESCE(locale,''))
+  // unique index (migration 0019) so the same query can redirect per locale.
   const rows = await exec.rows<RedirectRow>(
-    `INSERT INTO search_redirect (shop_id, query_normalized, destination)
-     VALUES ($1::uuid, $2, $3)
-     ON CONFLICT (shop_id, query_normalized) DO UPDATE SET destination=EXCLUDED.destination
-     RETURNING id, query_normalized, destination`,
-    [shopId, qn, safe],
+    `INSERT INTO search_redirect (shop_id, query_normalized, destination, locale)
+     VALUES ($1::uuid, $2, $3, $4)
+     ON CONFLICT (shop_id, query_normalized, COALESCE(locale, '')) DO UPDATE SET destination=EXCLUDED.destination
+     RETURNING id, query_normalized, destination, locale`,
+    [shopId, qn, safe, locale],
   );
   return rows[0];
 }
@@ -111,17 +115,25 @@ export async function deleteRedirect(exec: Exec, shopId: string, id: string): Pr
   return exec.run(`DELETE FROM search_redirect WHERE shop_id=$1::uuid AND id=$2::uuid`, [shopId, id]);
 }
 
-/** Look up a redirect for a raw query. Re-validates the destination (fail closed). */
+/**
+ * Look up a redirect for a raw query. Re-validates the destination (fail closed).
+ * Phase 13.2: when `locale` is given a locale-specific redirect takes precedence
+ * over a global one; null → only global redirects. With no locale-specific rows
+ * this is byte-identical (a single global match).
+ */
 export async function matchRedirect(
   exec: Exec,
   shopId: string,
   rawQuery: string,
+  locale: string | null = null,
 ): Promise<string | null> {
   const qn = normalizeQuery(rawQuery);
   if (qn.length === 0) return null;
   const rows = await exec.rows<{ destination: string }>(
-    `SELECT destination FROM search_redirect WHERE shop_id=$1::uuid AND query_normalized=$2 LIMIT 1`,
-    [shopId, qn],
+    `SELECT destination FROM search_redirect
+     WHERE shop_id=$1::uuid AND query_normalized=$2 AND (locale IS NULL OR locale = $3)
+     ORDER BY (locale IS NOT NULL) DESC LIMIT 1`,
+    [shopId, qn, locale],
   );
   if (!rows[0]) return null;
   try {

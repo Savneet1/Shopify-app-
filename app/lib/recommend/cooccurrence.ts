@@ -1,5 +1,6 @@
 import type { Exec } from "~/lib/db/executor";
 import { Params } from "~/lib/search/filters";
+import { combinedHidePredicate } from "~/lib/search/match";
 import { classifyRef } from "./refs";
 import { resolveRefsToProductIds, type ContentCard } from "./content";
 
@@ -143,6 +144,8 @@ export interface FbtOptions {
   includeOutOfStock: boolean;
   hideIds: string[];
   excludeProductIds?: string[];
+  /** Phase 13.5 combined-listing hide mode (role excluded from candidates). */
+  combinedHide?: "child" | "parent";
 }
 
 /**
@@ -180,6 +183,8 @@ export async function frequentlyBoughtTogether(
   if (opts.excludeProductIds && opts.excludeProductIds.length > 0) {
     candFilters.push(`d.product_id <> ALL(${pb.add(opts.excludeProductIds)}::uuid[])`);
   }
+  const fbtCh = combinedHidePredicate(opts.combinedHide, "d.combined_role");
+  if (fbtCh) candFilters.push(fbtCh);
 
   const metric = ranking === "lift"
     ? `(p.pair_count::numeric * COALESCE(nn.basket_count,0) / NULLIF(ss.sup * COALESCE(osup.pair_count,0), 0))`

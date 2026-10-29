@@ -34,6 +34,10 @@ export interface ProductInput {
   /** Shopify product createdAt (Phase 6 "newest" sort). */
   productCreatedAt?: string | Date | null;
   shopifyUpdatedAt?: string | Date | null;
+  /** Phase 13.5: combined-listing role ("PARENT" | "CHILD" | null = none). */
+  combinedRole?: "PARENT" | "CHILD" | null;
+  /** Phase 13.5: for a CHILD, the parent product's gid (else null). */
+  combinedParentGid?: string | null;
 }
 
 export interface VariantInput {
@@ -89,15 +93,17 @@ export async function upsertProduct(
     p.onlineStoreUrl ?? null,
     JSON.stringify(p.metafields ?? {}),
     toDate(p.productCreatedAt),
+    p.combinedRole ?? null,
+    p.combinedParentGid ?? null,
   ];
   const rows = await exec.rows<{ id: string }>(
     `INSERT INTO product
       (shop_id, shopify_product_gid, handle, title, description, vendor,
        product_type, status, tags, options, total_inventory, tracks_inventory,
        shopify_updated_at, featured_image_url, featured_image_alt, online_store_url,
-       metafields, product_created_at, updated_at, deleted_at)
+       metafields, product_created_at, combined_role, combined_parent_gid, updated_at, deleted_at)
      VALUES ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11::int,$12::boolean,$13::timestamptz,
-       $14,$15,$16,$17::jsonb,$18::timestamptz, now(), NULL)
+       $14,$15,$16,$17::jsonb,$18::timestamptz,$19,$20, now(), NULL)
      ON CONFLICT (shop_id, shopify_product_gid) DO UPDATE SET
        handle=EXCLUDED.handle, title=EXCLUDED.title, description=EXCLUDED.description,
        vendor=EXCLUDED.vendor, product_type=EXCLUDED.product_type, status=EXCLUDED.status,
@@ -106,6 +112,7 @@ export async function upsertProduct(
        featured_image_url=EXCLUDED.featured_image_url, featured_image_alt=EXCLUDED.featured_image_alt,
        online_store_url=EXCLUDED.online_store_url, metafields=EXCLUDED.metafields,
        product_created_at=COALESCE(EXCLUDED.product_created_at, product.product_created_at),
+       combined_role=EXCLUDED.combined_role, combined_parent_gid=EXCLUDED.combined_parent_gid,
        shopify_updated_at=EXCLUDED.shopify_updated_at, updated_at=now(), deleted_at=NULL
      WHERE product.shopify_updated_at IS NULL
         OR EXCLUDED.shopify_updated_at IS NULL

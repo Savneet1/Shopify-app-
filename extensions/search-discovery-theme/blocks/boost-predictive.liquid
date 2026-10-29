@@ -24,12 +24,19 @@
     "allowedHosts": [{{ shop.permanent_domain | json }}, {{ shop.domain | json }}],
     "abTesting": {% if block.settings.ab_testing == false %}false{% else %}true{% endif %},
     "analytics": {% if block.settings.analytics == true %}true{% else %}false{% endif %},
+    "personalized": {% if block.settings.personalized == false %}false{% else %}true{% endif %},
+    "locale": {{ request.locale.iso_code | default: 'en' | json }},
     "timeoutMs": {{ block.settings.timeout_ms | default: 2000 | json }},
     "debounceMs": {{ block.settings.debounce_ms | default: 150 | json }},
     "labels": {
       "predictiveLabel": {{ 'boost.predictive.listbox_label' | t | json }},
       "resultsAvailable": {{ 'boost.predictive.results_available' | t | json }},
-      "noResults": {{ 'boost.predictive.no_results' | t | json }}
+      "noResults": {{ 'boost.predictive.no_results' | t | json }},
+      "recentSearches": {{ 'boost.predictive.recent_searches' | t | json }},
+      "suggestedForYou": {{ 'boost.predictive.suggested_for_you' | t | json }},
+      "personalizeOn": {{ 'boost.predictive.personalize_on' | t | json }},
+      "personalizeOff": {{ 'boost.predictive.personalize_off' | t | json }},
+      "clearHistory": {{ 'boost.predictive.clear_history' | t | json }}
     }
   }
 </script>
@@ -95,6 +102,13 @@
       "id": "ab_testing",
       "label": "t:boost.settings.ab_testing.label",
       "info": "t:boost.settings.ab_testing.info",
+      "default": true
+    },
+    {
+      "type": "checkbox",
+      "id": "personalized",
+      "label": "t:boost.settings.personalized.label",
+      "info": "t:boost.settings.personalized.info",
       "default": true
     },
     {

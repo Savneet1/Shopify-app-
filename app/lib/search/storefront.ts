@@ -7,6 +7,7 @@ import {
   resolvePlanned,
   runProducts,
   strategyOf,
+  combinedFromDoc,
   type SearchProduct,
   type SearchStrategy,
   type SearchParams,
@@ -20,6 +21,9 @@ import { catalogSuggestionsWithExec, type Suggestion } from "./suggest";
 import { matchRedirect } from "./redirects";
 import { buildParseContext, parseQuery, type InterpretedItem, type InterpretKind } from "./nlparse";
 import { loadMerchPlan, EMPTY_MERCH_PLAN, type MerchPlan, type MerchAnnotation } from "~/lib/merch/rules";
+import { loadCombinedMode, combinedHideFor } from "./combined";
+import { validateLocale } from "./hints";
+import { resolveLocale } from "~/lib/i18n/locales";
 import { loadActiveBanners, type Banner } from "~/lib/merch/banners";
 import { attachPreorder } from "~/lib/preorder/annotate.server";
 
@@ -118,6 +122,7 @@ function mapRow(row: { product_id: string; gid: string; doc: any; cls?: any; sco
     priceMin: d.priceMin != null ? String(d.priceMin) : null, priceMax: d.priceMax != null ? String(d.priceMax) : null,
     compareAtMin: d.compareAtMin != null ? String(d.compareAtMin) : null, compareAtMax: d.compareAtMax != null ? String(d.compareAtMax) : null,
     available: Boolean(d.available), matchClass: row.cls, score: row.score != null ? Number(row.score) : undefined,
+    combined: combinedFromDoc(d),
   };
 }
 
@@ -131,9 +136,10 @@ function correctedQueryString(keptTokens: string[], corrections: Correction[]): 
 async function runCore(
   exec: Exec, shopId: string, active: IndexVersionRow, q: string, filters: SearchFilters,
   sort: SortOption, limit: number, offset: number, merch: MerchPlan,
+  combinedHide?: "child" | "parent", locale: string | null = null,
 ): Promise<CoreResult> {
-  const plan = await buildPlan(exec, shopId, active.id, q);
-  const planned = await resolvePlanned(exec, shopId, active.id, plan, filters, merch);
+  const plan = await buildPlan(exec, shopId, active.id, q, locale);
+  const planned = await resolvePlanned(exec, shopId, active.id, plan, filters, merch, combinedHide);
   const corrections = plan.corrections;
   const correctedQuery = correctedQueryString(plan.keptTokens, corrections);
   if (!planned) {
@@ -194,9 +200,13 @@ export async function storefrontSearchWithExec(
   const active = await getActiveVersion(exec, shopId);
   if (!active) return { ...base, strategy: "none", fallback: "native", tookMs: Date.now() - started };
 
+  // Phase 13.2: resolve the UNTRUSTED locale hint to a supported code (exact →
+  // base → en). Used ONLY for stop-word/synonym/redirect scoping, never echoed.
+  const resolvedLocale = resolveLocale(validateLocale((params as { locale?: unknown }).locale));
+
   // Redirect (exact normalized-query match) short-circuits, as in Phase 5.
   if (q.length > 0) {
-    const redirect = await matchRedirect(exec, shopId, q);
+    const redirect = await matchRedirect(exec, shopId, q, resolvedLocale);
     if (redirect) return { ...base, strategy: "none", indexVersion: active.version, redirect, tookMs: Date.now() - started };
   }
 
@@ -208,6 +218,9 @@ export async function storefrontSearchWithExec(
   const collectionGid = explicitFilters.collectionId;
   const merch = await loadMerchPlan(exec, shopId, active.id, { q, collectionGid, now, token: params.visitorToken ?? null });
   const banners = await loadActiveBanners(exec, shopId, { q, collectionGid, now });
+  // Phase 13.5: combined-listing hide mode. undefined (show_all) → no extra
+  // WHERE anywhere → byte-identical to a shop with no combined listings.
+  const combinedHide = combinedHideFor(await loadCombinedMode(exec, shopId));
 
   // Phase 6: parse → merge → effective params.
   let effectiveQ = q;
@@ -232,7 +245,7 @@ export async function storefrontSearchWithExec(
   }
 
   // Effective (parsed) search.
-  let core = await runCore(exec, shopId, active, effectiveQ, effectiveFilters, effectiveSort, limit, offset, merch);
+  let core = await runCore(exec, shopId, active, effectiveQ, effectiveFilters, effectiveSort, limit, offset, merch, combinedHide, resolvedLocale);
   let appliedFilters = effectiveFilters;
   let usedSort = effectiveSort;
   let usedQuery = effectiveQ;
@@ -240,7 +253,7 @@ export async function storefrontSearchWithExec(
   // Never worse than Phase 5: if parsing produced zero results but plain search
   // would not, fall back to plain search.
   if (interpretedAs.applied && core.total === 0) {
-    const plain = await runCore(exec, shopId, active, q, explicitFilters, explicitSort ?? "relevance", limit, offset, merch);
+    const plain = await runCore(exec, shopId, active, q, explicitFilters, explicitSort ?? "relevance", limit, offset, merch, combinedHide, resolvedLocale);
     if (plain.total > 0) {
       core = plain;
       appliedFilters = explicitFilters;
@@ -253,7 +266,7 @@ export async function storefrontSearchWithExec(
   const zeroResult = core.total === 0;
   // Hidden products are excluded from suggestions too (Phase 8).
   const suggestions = zeroResult && usedQuery.length > 0
-    ? await catalogSuggestionsWithExec(exec, shopId, usedQuery, undefined, { hideIds: merch.hideIds })
+    ? await catalogSuggestionsWithExec(exec, shopId, usedQuery, undefined, { hideIds: merch.hideIds, combinedHide })
     : [];
 
   return {

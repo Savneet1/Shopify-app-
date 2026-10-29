@@ -33,6 +33,22 @@ export interface PlannedMatch {
    * exclusion shared by products, totals, facets, predictive, suggest). Pins and
    * boost/demote are consumed by runProducts (relevance ordering). */
   merch?: MerchPlan;
+  /** Phase 13.5: combined-listing hide mode. "child" hides CHILD products,
+   * "parent" hides PARENT products, undefined = show all (byte-identical). A
+   * hard WHERE in buildWhere, shared by products/totals/facets. */
+  combinedHide?: "child" | "parent";
+}
+
+/** Phase 13.5: the hard WHERE fragment that hides combined-listing children or
+ * parents (or nothing). Pure; NULL combined_role (no combined listing) is kept.
+ * `col` lets callers whose doc is aliased pass e.g. "d.combined_role". */
+export function combinedHidePredicate(
+  hide: "child" | "parent" | undefined,
+  col = "combined_role",
+): string | null {
+  if (hide === "child") return `${col} IS DISTINCT FROM 'CHILD'`;
+  if (hide === "parent") return `${col} IS DISTINCT FROM 'PARENT'`;
+  return null;
 }
 
 /** Whole-token exact SKU/barcode probe on the raw query. */
@@ -79,5 +95,9 @@ export function buildWhere(
   if (m.merch && m.merch.hideIds.length > 0) {
     parts.push(`product_id <> ALL(${pb.add(m.merch.hideIds)}::uuid[])`);
   }
+  // Phase 13.5 combined-listing hide: a hard WHERE (only added when a mode is
+  // set → the show_all SQL is byte-identical).
+  const ch = combinedHidePredicate(m.combinedHide);
+  if (ch) parts.push(ch);
   return parts.join(" AND ");
 }
