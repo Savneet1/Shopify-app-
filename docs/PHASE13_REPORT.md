@@ -122,6 +122,50 @@ to confirm a test **fails**, then the mutation was reverted:
 `npm run typecheck`, `npm run build`, `npm run worker:build`, `npm test`, and
 `npm run test:ci-parity` — results on the STATUS line.
 
+## Phase 13b — fix batch (on top of `a4afb83`)
+
+Approved fix batch (no new features). Base `a4afb83`. New migration: **none**
+(all fixes are code; the C4 reindex uses a new pg-boss queue created at runtime —
+no schema migration). Scope unchanged; no new dependency/extension/definer.
+
+| ID | Failing input (probe) | New behaviour | Query counts |
+|---|---|---|---|
+| **C1** (HIGH, unpublished-data leak) | Parent with children red $40 / blue $55 / oos $45 (all ACTIVE+published) + DRAFT $5 + ARCHIVED $3 + soft-deleted $2 reported `{childCount:5, priceMin:"3", priceMax:"55"}` — archived/draft prices on a published card. | The `docInsertSql` child aggregate counts/prices **only VISIBLE children** (`status='ACTIVE' AND online_store_url IS NOT NULL AND deleted_at IS NULL`). Scenario now yields `childCount 3, range 40..55`. **Rule:** childCount = all visible children (incl. OOS); price range = over available variants when any visible child is available, else over all visible children; zero visible children → `childCount 0` and **no** range keys. Identical across all 4 doc paths; other shops' children never counted. | Doc build: still one statement per doc-write path (one extra `LEFT JOIN LATERAL` with a `FILTER`). |
+| **C2** (MEDIUM, stale parent) | Child price 55→99 refreshed via `refreshDocInActiveVersion` left the parent's `combinedPriceMax` at 55 until the parent itself was refreshed. | Any incremental CHILD refresh/removal (upsert, delete/unpublish, collection-member batch) re-projects the parent doc in the same unit of work. Reparent/role-change refreshes BOTH old + new parent (old parent read from a CTE pre-image in the same upsert — no extra round-trip for non-combined). Deduped per parent per batch; idempotent under replay/out-of-order (monotonic guard preserved). | Child-with-parent update: **+2** statements (active-version lookup + parent re-projection) vs a non-combined update. Non-combined update: **0** parent-refresh statements (byte-identical path). Batch of N children, one parent: parent refreshed **once**. |
+| **C3** (MEDIUM, hydration scale) | `formatMoneyMinor` divided by `10^fractionDigits`; a probe rendered `1e30` as a 29-digit dollar amount; JPY would be 100× / KWD 10× off if the Ajax API normalises to hundredths. | Ajax prices are treated as **hundredths** (÷100) and formatted via `Intl` in the active currency (JPY 1290000→¥12,900; USD 12900→$129.00). Until verified, hydration is **enabled only for 2-fraction-digit currencies**; others silently keep the indexed price. Absurd (`>1e11`), non-finite, negative and non-number values → invalid. The community source is recorded as **Requires Verification** in `docs/PHASE13.md`. | No server/query change (client only). |
+| **C4** (MEDIUM, legacy-doc fail-open) | Docs built before Phase 13 (NULL `combined_role` column) stayed visible under `hide_children` with no warning. | On a non-default mode save (and on `/app/localization` load) the admin computes `staleDocCount` and, if > 0, warns and **enqueues a bounded, singleton-per-shop `reindex-docs` job** (`backfillActiveSearchColumns`, idempotent) that re-projects the docs; repeated saves don't re-enqueue while one is pending (stately); "up to date" at 0. `show_all` never triggers it. | One `staleDocCount` SELECT per localization load/save; one bounded reindex per shop when stale > 0. |
+| **C5** (LOW, reorder throws) | `interestReorder` threw when the scoring function threw. | The scorer is wrapped in try/catch (throw → score 0, original position); `NaN`/`Infinity`/string/`null` → 0; never throws, never adds/removes. Documented: tampered localStorage strings render with `textContent` only. | Client only. |
+
+### Tests (13b)
+
+New: `phase13b-parent-refresh` (11), `phase13b-stale-backfill` (6), the C1 cases
+added to `phase13-combined` (now 25), the C3 cases rewritten in
+`phase13-hydration` (21), the C5 cases added to `phase13-interest` (18), and a
+`reindex-docs` case added to `jobs-pgboss.integration` (5).
+
+**Tests I had to change (none weakened):** `phase13-hydration` — the two
+pre-13b `formatMoneyMinor` currency-exponent assertions were replaced to reflect
+the corrected ÷100 money scale (the USD result is unchanged; the JPY expectation
+changed from ¥2,000 to ¥12,900 for input 1290000, because 1290000 hundredths =
+¥12,900). No other existing test changed.
+
+### Mutation testing (13b)
+
+Three new guards were mutation-tested (mutation applied → a test fails →
+reverted): **(C1)** dropping the `status='ACTIVE' AND online_store_url IS NOT
+NULL` child-visibility predicate re-admits draft/archived children →
+`phase13-combined` fails; **(C3)** making `currencyHydrationEligible` always true
+→ `phase13-hydration` JPY-fallback test fails; **(C5)** removing the try/catch in
+`interestReorder` → `phase13-interest` "throwing scorer" test throws. (The
+earlier Phase-13 mutation tests for the combined hide clause and the sweeper cap
+still hold.)
+
+### Gates (13b)
+
+`typecheck`, `build`, `worker:build`, `npm test`, `npm run test:ci-parity` — see
+the STATUS line for both counts. Live-Prisma parity: **PENDING**. No performance
+numbers claimed.
+
 ## Next step
 
 Await explicit approval for **Phase 14** (performance + security hardening +

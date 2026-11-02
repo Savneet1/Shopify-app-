@@ -84,6 +84,14 @@ Merchant checkbox "Personalised suggestions" defaults ON but is effective only
 with consent. Interest/recent data is never copied into Phase 11 analytics,
 logs, URLs or any other storage.
 
+**Rendering safety (Phase 13b C5).** Every value read from the interest
+localStorage key — recent-search strings and suggestion titles, which a user
+could tamper with — is written to the DOM with `textContent` only, never
+`innerHTML`, so a tampered string cannot inject markup. The stable re-order
+helper `interestReorder` is hardened too: a scoring function that **throws**, or
+returns `NaN`/`Infinity`/a string/`null`, scores 0 for that item (keeping its
+original position); the helper never throws and never adds or removes an item.
+
 ## 13.2 Languages / i18n (migration 0019)
 
 - **9 UI locales:** en (source), fr (reviewed), and de/es/it/pt-BR/nl/ja/ar
@@ -129,6 +137,23 @@ logs, URLs or any other storage.
   card **only** when hydration is enabled. No server change; the API is
   byte-identical. Pure logic tested with an injected fetch.
 
+**Doc source & money scale (Phase 13b C3).** The hydrated amounts come from the
+**Shopify Ajax API** document `/products/<handle>.js`. A Shopify-staff reply in
+the developer community ("Clarification on cart.js money values",
+community.shopify.dev) states the Ajax API normalises **all** money values to
+**two decimal places** — i.e. hundredths — even for zero-decimal currencies
+(JPY, KRW). This is **NOT** official documentation and is therefore **Requires
+Verification**. Acting on it:
+- `formatMoneyMinor` treats the Ajax value as **hundredths** (divides by 100) and
+  lets `Intl.NumberFormat` round to the active currency's own digits (USD 12900 →
+  `$129.00`; JPY 1290000 → `¥12,900`).
+- **Until verified on a real store, hydration is ENABLED ONLY for currencies
+  whose ISO fraction digits are 2.** For any other currency (JPY/KRW zero-digit,
+  KWD/BHD three-digit) the card silently keeps the indexed shop-currency price —
+  a wrong guess can never mislabel a price.
+- Absurd values (`> 1e11` minor units), non-finite, negative or non-number inputs
+  are rejected as invalid (a probe had `1e30` render as a 29-digit dollar amount).
+
 **Limits:** `/products/<handle>.js` is shop-currency; true multi-currency
 presentment conversion on a real Markets store is **Requires Verification**.
 
@@ -167,18 +192,53 @@ the admin `/app/localization` page rather than faked.
   `combinedChildCount` and aggregate `combinedPriceMin`/`Max` are **derived at
   build time** from the child rows (which carry `combined_parent_gid`), scoped to
   the same shop — never pulling another tenant's children.
+- **Child visibility in the aggregate (Phase 13b C1).** The aggregate counts and
+  prices **only children that are VISIBLE by exactly the rule the search docs
+  use**: `status = 'ACTIVE' AND online_store_url IS NOT NULL AND deleted_at IS
+  NULL`. Draft, archived, unpublished and soft-deleted children NEVER affect the
+  count or the range — fixing a leak where an archived/draft child's price showed
+  on a published parent card. The rule:
+  - **`combinedChildCount`** = every visible child (including out-of-stock ones).
+  - **Price range** = over the **purchasable (available) variants** when at least
+    one visible child is available; otherwise over **all** visible children's
+    variants (so an all-out-of-stock parent still shows a range).
+  - A parent with **zero** visible children has `combinedChildCount: 0` and
+    **no** `combinedPriceMin`/`Max` keys at all.
+- **Freshness (Phase 13b C2).** Whenever a CHILD's doc is refreshed or removed
+  through any incremental path (upsert/webhook, deletion/unpublish, collection-
+  member batch refresh), its PARENT's doc is re-projected in the same unit of
+  work so the derived aggregate is immediately correct. On a **reparent** or
+  **role change**, BOTH the old and the new parent are refreshed — the old parent
+  gid is read back from a CTE pre-image in the **same** upsert statement, so a
+  **non-combined** product update issues **no extra query**. Parent refreshes are
+  **deduped** (one per distinct parent per batch) and **idempotent**: they read
+  only current child state, so a replayed/out-of-order child update (skipped by
+  the monotonic guard) yields the same parent doc. Query counts: a child update
+  with a parent issues **+2** statements (one active-version lookup + one parent
+  re-projection) over a non-combined update; a non-combined update issues the
+  same statements as before (no parent-refresh statement). Vocabulary is not
+  rebuilt on a parent-only refresh (the parent's searchable tokens are unchanged).
 - **Hide mode:** ONE per-shop `app_setting` key `combined_listing_mode`
   (`show_all` default / `hide_children` / `hide_parents`). It becomes a single
   hard `WHERE` (`combined_role IS DISTINCT FROM 'CHILD'|'PARENT'`) in the one
   planner (`buildWhere`), so results, totals and facet counts agree, plus the
   same clause in predictive, suggestions and every recommendation shelf. Products
   with NULL role are never hidden. `show_all` adds no clause → byte-identical.
+- **Legacy docs (Phase 13b C4).** Docs built before Phase 13 have a NULL
+  `combined_role` column, so a non-default hide mode would silently fail to hide
+  them. When a non-default mode is set (and on the `/app/localization` page load),
+  the admin computes `staleDocCount` — combined products whose active-version doc
+  still has NULL role — and, if > 0, shows a warning and **enqueues a bounded,
+  singleton-per-shop reindex** (`reindex-docs` queue → `backfillActiveSearchColumns`,
+  idempotent) that re-projects the docs; repeated saves do not re-enqueue while
+  one is pending (stately). Once the count reaches 0 the page shows "up to date".
+  `show_all` never triggers it.
 - **Parent cards** show the aggregate price range additively (via
   `Core.formatPrice`), only when the payload carries it.
 
-**Known limit:** a PARENT's derived aggregate refreshes on a full rebuild or when
-the parent itself updates; a child-only price change is reconciled on the next
-full sync (documented, acceptable for a read-only feature).
+**Known limit:** the parent aggregate is kept fresh on every incremental child
+change (C2); a full rebuild remains the backstop for any missed webhook, and the
+derived range still reflects the last synced child state.
 
 ## 13.6 Admin `/app/localization` (registered)
 

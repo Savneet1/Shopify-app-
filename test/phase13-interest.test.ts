@@ -143,6 +143,31 @@ describe("Phase 13.1 — interestReorder is stable and never adds/removes", () =
   });
 });
 
+describe("Phase 13b C5 — interestReorder never throws", () => {
+  const items = [{ id: "a" }, { id: "b" }, { id: "c" }];
+  it("a THROWING scorer → original order, no throw", () => {
+    let out: any;
+    expect(() => { out = Core.interestReorder(items, () => { throw new Error("boom"); }); }).not.toThrow();
+    expect(out.map((x: any) => x.id)).toEqual(["a", "b", "c"]); // all score 0 → stable
+    expect(out.length).toBe(3);
+  });
+  it("NaN / Infinity / string / null scores are treated as 0 (stable, kept)", () => {
+    const scores: Record<string, unknown> = { a: NaN, b: Infinity, c: "nope" };
+    const out = Core.interestReorder(items, (it: any) => scores[it.id]);
+    expect(out.map((x: any) => x.id)).toEqual(["a", "b", "c"]);
+    const out2 = Core.interestReorder(items, () => null);
+    expect(out2.map((x: any) => x.id)).toEqual(["a", "b", "c"]);
+  });
+  it("a scorer that throws for SOME items still orders the finite-scored ones", () => {
+    const out = Core.interestReorder(items, (it: any) => {
+      if (it.id === "b") throw new Error("x");
+      return it.id === "c" ? 10 : 1;
+    });
+    expect(out.map((x: any) => x.id)).toEqual(["c", "a", "b"]); // c(10) > a(1) > b(0, threw)
+    expect(new Set(out.map((x: any) => x.id))).toEqual(new Set(["a", "b", "c"]));
+  });
+});
+
 describe("Phase 13.1 — STATIC: the interest key is touched ONLY in the guarded helper", () => {
   const assets = ["boost-core.js", "boost-predictive.js", "boost-results.js", "boost-recommendations.js", "boost-analytics.js", "boost-bundle.js"];
   it("no asset outside boost-core references the raw interest localStorage key", () => {

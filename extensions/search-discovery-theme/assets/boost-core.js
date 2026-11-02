@@ -702,7 +702,15 @@
   function interestReorder(items, scoreOf) {
     var arr = Array.isArray(items) ? items.slice() : [];
     var score = typeof scoreOf === "function" ? scoreOf : function () { return 0; };
-    var decorated = arr.map(function (it, i) { return { it: it, i: i, s: Number(score(it)) || 0 }; });
+    // Phase 13b C5: a scorer must NEVER break rendering. A throwing scorer, or a
+    // NaN/Infinity/string/null result, scores 0 so that item keeps its original
+    // position; the whole thing never throws, never adds/removes an item.
+    var decorated = arr.map(function (it, i) {
+      var s = 0;
+      try { s = Number(score(it)); } catch (e) { s = 0; }
+      if (!isFinite(s)) s = 0;
+      return { it: it, i: i, s: s };
+    });
     decorated.sort(function (a, b) { return (b.s - a.s) || (a.i - b.i); }); // stable: original index breaks ties
     return decorated.map(function (d) { return d.it; });
   }
@@ -824,6 +832,10 @@
   var HYDRATE_MAX_CARDS = 12;
   var HYDRATE_CONCURRENCY = 4;
   var HYDRATE_TIMEOUT_MS = 1500;
+  // An absurd minor-unit amount is treated as invalid (a probe rendered 1e30 as
+  // "$10,000,000,000,000,000,000,000,000,000.00"). 1e11 minor units = 1e9 major
+  // in a 2-digit currency — far above any real product price.
+  var HYDRATE_MAX_MINOR = 1e11;
 
   /** minor-unit exponent for a currency (via Intl), default 2; JPY→0 etc. */
   function currencyFractionDigits(currency) {
@@ -833,21 +845,35 @@
       return typeof d === "number" ? d : 2;
     } catch (e) { return 2; }
   }
-  /** Format an integer minor-unit amount as currency in the active locale. */
+  /** True only for currencies whose ISO fraction digits are 2. Phase 13b C3:
+   * until the Ajax-API money normalisation is verified on a real store, we only
+   * HYDRATE 2-digit currencies; others silently keep the indexed price. */
+  function currencyHydrationEligible(currency) {
+    return currencyFractionDigits(currency) === 2;
+  }
+  /**
+   * Format an Ajax /products/<handle>.js money value as currency. Phase 13b C3:
+   * the Shopify Ajax API normalises ALL money values to HUNDREDTHS even for
+   * zero-decimal currencies (JPY, KRW) — a Shopify-staff community reply, NOT
+   * official docs (Requires Verification). So we divide by 100 and let Intl round
+   * to the active currency's own digits (JPY 1290000 -> ¥12,900; USD 12900 ->
+   * $129.00). Absurd / non-finite / negative values → "" (keep indexed price).
+   */
   function formatMoneyMinor(amountMinor, currency, locale) {
-    if (amountMinor == null || !isFinite(Number(amountMinor))) return "";
-    var digits = currencyFractionDigits(currency);
-    var major = Number(amountMinor) / Math.pow(10, digits);
+    if (typeof amountMinor !== "number" || !isFinite(amountMinor) || amountMinor < 0 || amountMinor > HYDRATE_MAX_MINOR) return "";
+    var major = amountMinor / 100; // Ajax hundredths, regardless of the currency's own digits
     try {
       if (currency) return new Intl.NumberFormat(locale || undefined, { style: "currency", currency: currency }).format(major);
     } catch (e) {}
     return String(major);
   }
   /** Parse a Shopify product.js object → {minMinor, maxMinor} integer minor
-   * units, or null. Defensive: ignores anything non-integer/negative. */
+   * units, or null. Defensive: ignores non-integer/negative/absurd values. */
   function parseProductJsPrices(obj) {
     if (!obj || typeof obj !== "object") return null;
-    var isMinor = function (n) { return typeof n === "number" && isFinite(n) && n >= 0 && Math.floor(n) === n; };
+    var isMinor = function (n) {
+      return typeof n === "number" && isFinite(n) && n >= 0 && n <= HYDRATE_MAX_MINOR && Math.floor(n) === n;
+    };
     var lo = null, hi = null;
     if (isMinor(obj.price_min) && isMinor(obj.price_max)) { lo = obj.price_min; hi = obj.price_max; }
     else if (Array.isArray(obj.variants)) {
@@ -860,8 +886,10 @@
     return { minMinor: lo, maxMinor: hi == null ? lo : hi };
   }
   /** Full card price string from a parsed product.js, or null to keep the
-   * indexed fallback. */
+   * indexed fallback. Phase 13b C3: non-2-digit currencies are NOT hydrated
+   * (silent fallback) until the Ajax normalisation is verified. */
   function hydratedPriceString(obj, currency, locale) {
+    if (!currencyHydrationEligible(currency)) return null; // silent fallback
     var p = parseProductJsPrices(obj);
     if (!p) return null;
     var lo = formatMoneyMinor(p.minMinor, currency, locale);
@@ -978,6 +1006,7 @@
     HYDRATE_CONCURRENCY: HYDRATE_CONCURRENCY,
     HYDRATE_TIMEOUT_MS: HYDRATE_TIMEOUT_MS,
     currencyFractionDigits: currencyFractionDigits,
+    currencyHydrationEligible: currencyHydrationEligible,
     formatMoneyMinor: formatMoneyMinor,
     parseProductJsPrices: parseProductJsPrices,
     hydratedPriceString: hydratedPriceString,

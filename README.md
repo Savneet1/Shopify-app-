@@ -2,10 +2,10 @@
 
 A production-grade, multi-tenant Shopify **Search, Filter & Discovery** app built
 on the current official **Shopify React Router** template, with PostgreSQL as the
-only data/search engine. This repository is at **Phase 13 (localization & markets:
-9 UI locales incl. RTL Arabic, locale-scoped search config, client-side interest
-suggestions, client price hydration, read-only combined listings, and an honest
-B2B-limitations stance)**.
+only data/search engine. This repository is at **Phase 13b (localization & markets
+fix batch on top of Phase 13: combined-listing aggregate now counts only visible
+children and refreshes the parent on any child change; price hydration money-scale
+guard; legacy-doc backfill; interest re-order never throws)**.
 
 > Phase gating is enforced. Implemented so far: Phase 1 (foundation: auth,
 > embedded shell, multi-tenancy + RLS, privacy webhooks, billing), Phase 2/2.1
@@ -97,7 +97,13 @@ B2B-limitations stance)**.
 > follow. See `docs/PHASE*.md`. Stack unchanged: no Redis, no external search/AI/analytics,
 > PostgreSQL-only; scopes = `read_products` (Phases 11–13 add no scope; purchase
 > attribution / Web Pixel / real bundle discounts / Markets prices / B2B pricing /
-> native-reviewed translations = Requires Verification).
+> native-reviewed translations = Requires Verification), Phase 13b (fix batch:
+> the combined-listing parent aggregate counts/prices **only visible** children
+> — draft/archived/unpublished/deleted never leak — and is refreshed on every
+> incremental child change incl. reparent; client price hydration treats Ajax
+> money as hundredths and only hydrates 2-decimal currencies until verified; a
+> legacy-doc backfill corrects pre-Phase-13 docs under a non-default hide mode;
+> and the client interest re-order never throws).
 
 ## Stack (Phase 1)
 

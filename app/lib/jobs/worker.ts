@@ -7,6 +7,7 @@ import {
   type IncrementalJob,
 } from "./handlers";
 import { withShopExec } from "~/lib/tenant.server";
+import { backfillActiveSearchColumns } from "~/lib/index/engine";
 import {
   fetchBulkCatalog,
   fetchProductNode,
@@ -80,6 +81,15 @@ export async function startWorker(): Promise<PgBoss> {
     for (const job of jobs) {
       const r = await runRestockConfirm(job.data.shopId, job.data.subscriptionId);
       logger.info({ shopId: job.data.shopId, sent: r.sent, reason: r.reason }, "restock confirm");
+    }
+  });
+
+  // Phase 13b C4: bounded doc re-projection (singleton per shop). Idempotent —
+  // re-runs are harmless; corrects legacy docs missing the combined-listing role.
+  await boss.work<{ shopId: string }>(QUEUE.reindexDocs, { batchSize: 1 }, async (jobs) => {
+    for (const job of jobs) {
+      const n = await withShopExec(job.data.shopId, (e) => backfillActiveSearchColumns(e, job.data.shopId));
+      logger.info({ shopId: job.data.shopId, reprojected: n }, "reindex docs");
     }
   });
 

@@ -51,6 +51,11 @@ async function seed(db: TestDb, shop: string, s: Seed): Promise<string> {
   });
 }
 
+async function softDelete(db: TestDb, shop: string, gid: string): Promise<void> {
+  await db.withShopExec(shop, (e) =>
+    e.run(`UPDATE product SET deleted_at = now() WHERE shop_id=$1::uuid AND shopify_product_gid=$2`, [shop, gid]));
+}
+
 async function build(db: TestDb, shop: string): Promise<string> {
   const n = await db.withShopExec(shop, async (e) =>
     (await e.rows<{ n: number }>("SELECT count(*)::int n FROM product WHERE shop_id=$1::uuid AND deleted_at IS NULL", [shop]))[0].n);
@@ -156,6 +161,82 @@ describe("Phase 13.5 — combined listings: sync + doc projection", () => {
     expect(single.doc).toEqual(full.doc);
     expect(batch.doc).toEqual(full.doc);
     expect(reindex.doc).toEqual(full.doc);
+  });
+});
+
+describe("Phase 13b C1 — parent aggregate counts ONLY visible children", () => {
+  let db: TestDb; let shop: string;
+  const P = G(10), RED = G(11), BLUE = G(12), OOS = G(13), DRAFT = G(14), ARCH = G(15), DEL = G(16);
+  beforeAll(() => { db = makeDb(); });
+  afterAll(() => db.close());
+  beforeEach(async () => {
+    await db.resetDb();
+    shop = await db.resolveShop("p13bc1.myshopify.com");
+    await seed(db, shop, { gid: P, title: "Parent", price: "999.00", combinedRole: "PARENT" });
+    await seed(db, shop, { gid: RED, title: "Red", price: "40.00", available: true, combinedRole: "CHILD", combinedParentGid: P });
+    await seed(db, shop, { gid: BLUE, title: "Blue", price: "55.00", available: true, combinedRole: "CHILD", combinedParentGid: P });
+    await seed(db, shop, { gid: OOS, title: "Oos", price: "45.00", available: false, combinedRole: "CHILD", combinedParentGid: P });
+    await seed(db, shop, { gid: DRAFT, title: "Draft", price: "5.00", status: "DRAFT", combinedRole: "CHILD", combinedParentGid: P });
+    await seed(db, shop, { gid: ARCH, title: "Arch", price: "3.00", status: "ARCHIVED", combinedRole: "CHILD", combinedParentGid: P });
+    await seed(db, shop, { gid: DEL, title: "Del", price: "2.00", combinedRole: "CHILD", combinedParentGid: P });
+    await softDelete(db, shop, DEL);
+  });
+
+  it("the leak scenario → childCount 3, range 40..55 (draft/archived/deleted/unpublished excluded)", async () => {
+    await build(db, shop);
+    const parent = await docOf(db, shop, P);
+    expect(parent.doc.combinedChildCount).toBe(3); // red + blue + oos (all ACTIVE+published)
+    expect(Number(parent.doc.combinedPriceMin)).toBe(40); // over AVAILABLE variants (red 40)
+    expect(Number(parent.doc.combinedPriceMax)).toBe(55); // blue 55; oos 45 unavailable → excluded
+  });
+
+  it("an unpublished child is also excluded", async () => {
+    await seed(db, shop, { gid: G(17), title: "Hidden", price: "1.00", published: false, combinedRole: "CHILD", combinedParentGid: P });
+    await build(db, shop);
+    const parent = await docOf(db, shop, P);
+    expect(parent.doc.combinedChildCount).toBe(3); // unchanged — unpublished never counts
+    expect(Number(parent.doc.combinedPriceMin)).toBe(40);
+  });
+
+  it("OOS rule: when NO visible child is available, range spans all visible children's variants", async () => {
+    // make red + blue unavailable too → all three visible children are OOS
+    await db.withShopExec(shop, (e) => e.run(
+      `UPDATE variant v SET available_for_sale=false FROM product p WHERE v.product_id=p.id AND p.shop_id=$1::uuid AND p.shopify_product_gid = ANY($2::text[])`,
+      [shop, [RED, BLUE]]));
+    await build(db, shop);
+    const parent = await docOf(db, shop, P);
+    expect(parent.doc.combinedChildCount).toBe(3);
+    expect(Number(parent.doc.combinedPriceMin)).toBe(40); // now over ALL visible variants: 40,55,45
+    expect(Number(parent.doc.combinedPriceMax)).toBe(55);
+  });
+
+  it("a parent with zero visible children → childCount 0 and NO range fields", async () => {
+    // demote the three visible children to DRAFT
+    await db.withShopExec(shop, (e) => e.run(
+      `UPDATE product SET status='DRAFT' WHERE shop_id=$1::uuid AND shopify_product_gid = ANY($2::text[])`,
+      [shop, [RED, BLUE, OOS]]));
+    await build(db, shop);
+    const parent = await docOf(db, shop, P);
+    expect(parent.doc.combinedChildCount).toBe(0);
+    expect(parent.doc).not.toHaveProperty("combinedPriceMin");
+    expect(parent.doc).not.toHaveProperty("combinedPriceMax");
+  });
+
+  it("all four doc-writing paths produce the identical visibility-filtered aggregate", async () => {
+    const versionId = await build(db, shop);
+    const full = await docOf(db, shop, P);
+    const parentId = await db.withShopExec(shop, async (e) =>
+      (await e.rows<{ id: string }>(`SELECT id FROM product WHERE shop_id=$1::uuid AND shopify_product_gid=$2`, [shop, P]))[0].id);
+    await db.withShopExec(shop, (e) => refreshDocInActiveVersion(e, shop, parentId));
+    const single = await docOf(db, shop, P);
+    await db.withShopExec(shop, (e) => refreshDocsForProducts(e, shop, [parentId]));
+    const batch = await docOf(db, shop, P);
+    await db.withShopExec(shop, (e) => reindexVersionDocs(e, shop, versionId));
+    const reindex = await docOf(db, shop, P);
+    expect(single.doc).toEqual(full.doc);
+    expect(batch.doc).toEqual(full.doc);
+    expect(reindex.doc).toEqual(full.doc);
+    expect(full.doc.combinedChildCount).toBe(3);
   });
 });
 

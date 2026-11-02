@@ -4,7 +4,8 @@ import { TitleBar } from "@shopify/app-bridge-react";
 import { authenticate } from "~/shopify.server";
 import { resolveShopId, withShopExec } from "~/lib/tenant.server";
 import { SUPPORTED_LOCALES } from "~/lib/i18n/locales";
-import { loadCombinedMode, saveCombinedMode, type CombinedMode } from "~/lib/search/combined";
+import { loadCombinedMode, saveCombinedMode, countStaleCombinedDocs, type CombinedMode } from "~/lib/search/combined";
+import { enqueueReindexDocs } from "~/lib/jobs/queue";
 import type { Exec } from "~/lib/db/executor";
 
 /**
@@ -40,6 +41,26 @@ async function loadCounts(e: Exec, shopId: string): Promise<Counts> {
   };
 }
 
+// Phase 13b C4: when a non-default hide mode is active and some combined
+// products still have a legacy doc missing the role, those products would
+// silently escape the hide. Surface the count and enqueue a bounded, singleton
+// backfill so the docs self-correct without a manual step. show_all never
+// triggers it (nothing is hidden). Returns the count + whether a backfill was
+// (re-)enqueued (null job id = one already pending).
+async function staleAndBackfill(shopId: string, mode: CombinedMode): Promise<{ staleDocCount: number; backfillEnqueued: boolean }> {
+  const staleDocCount = await withShopExec(shopId, (e) => countStaleCombinedDocs(e, shopId));
+  let backfillEnqueued = false;
+  if (mode !== "show_all" && staleDocCount > 0) {
+    try {
+      const jobId = await enqueueReindexDocs(shopId);
+      backfillEnqueued = jobId != null; // null = a reindex is already pending (stately)
+    } catch {
+      backfillEnqueued = false; // a queue hiccup must never break the admin page
+    }
+  }
+  return { staleDocCount, backfillEnqueued };
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shopId = await resolveShopId(session.shop);
@@ -47,7 +68,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     mode: await loadCombinedMode(e, shopId),
     counts: await loadCounts(e, shopId),
   }));
-  return { locales: SUPPORTED_LOCALES, mode, counts };
+  const { staleDocCount, backfillEnqueued } = await staleAndBackfill(shopId, mode);
+  return { locales: SUPPORTED_LOCALES, mode, counts, staleDocCount, backfillEnqueued };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -57,7 +79,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const mode = String(form.get("combinedMode") || "show_all") as CombinedMode;
   try {
     const saved = await withShopExec(shopId, (e) => saveCombinedMode(e, shopId, mode));
-    return { ok: true, mode: saved };
+    const { staleDocCount, backfillEnqueued } = await staleAndBackfill(shopId, saved);
+    return { ok: true, mode: saved, staleDocCount, backfillEnqueued };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "failed" };
   }
@@ -70,7 +93,7 @@ const REVIEW_LABEL: Record<string, string> = {
 };
 
 export default function Localization() {
-  const { locales, mode, counts } = useLoaderData<typeof loader>();
+  const { locales, mode, counts, staleDocCount, backfillEnqueued } = useLoaderData<typeof loader>();
   const nav = useNavigation();
   const busy = nav.state !== "idle";
   const card = { border: "1px solid #e3e3e3", borderRadius: 8, padding: 16, marginBottom: 20 } as const;
@@ -140,6 +163,15 @@ export default function Localization() {
             {counts.combinedParents === 1 ? "" : "s"} · <strong>{counts.combinedChildren}</strong> child
             {counts.combinedChildren === 1 ? "" : "ren"}.
           </p>
+          {mode !== "show_all" && staleDocCount > 0 && (
+            <div style={{ background: "#fff8e1", border: "1px solid #ffe08a", borderRadius: 6, padding: 10, fontSize: 13, color: "#7a5b00", marginBottom: 10 }}>
+              <strong>{staleDocCount} combined product{staleDocCount === 1 ? "" : "s"} still use an older search index entry</strong> and
+              would not be hidden yet. {backfillEnqueued ? "A one-time reindex has been queued and they will be corrected automatically." : "A reindex is already in progress; they will be corrected shortly."} No action is needed.
+            </div>
+          )}
+          {mode !== "show_all" && staleDocCount === 0 && (
+            <div style={{ color: "#1a7f37", fontSize: 13, marginBottom: 10 }}>✓ All combined products are up to date.</div>
+          )}
           <Form method="post" style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <label htmlFor="combinedMode">Display mode</label>
             <select id="combinedMode" name="combinedMode" defaultValue={mode}>

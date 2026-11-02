@@ -33,20 +33,56 @@ describe("Phase 13.3 — parseProductJsPrices (defensive, integer minor units)",
   });
 });
 
-describe("Phase 13.3 — formatMoneyMinor respects currency exponent", () => {
-  it("2-digit currency divides by 100", () => {
-    expect(Core.formatMoneyMinor(1999, "USD", "en-US")).toMatch(/19\.99/);
+describe("Phase 13b C3 — formatMoneyMinor treats Ajax prices as hundredths", () => {
+  // CHANGED in 13b: Ajax money values are hundredths even for zero-decimal
+  // currencies (Shopify-staff community reply = Requires Verification). So
+  // formatMoneyMinor always divides by 100 and lets Intl round to the currency's
+  // own digits. The two tests below replace the pre-13b "divides by 10^digits"
+  // pair (the USD case is unchanged; the JPY expectation changed from ¥2,000 to
+  // ¥20 because 2000 hundredths = ¥20).
+  it("USD 12900 -> $129.00", () => {
+    expect(Core.formatMoneyMinor(12900, "USD", "en-US")).toMatch(/129\.00/);
   });
-  it("0-digit currency (JPY) does not divide", () => {
-    const s = Core.formatMoneyMinor(2000, "JPY", "ja-JP");
-    expect(s).toMatch(/2,?000/); // ¥2,000 — not 20.00
+  it("pure formatter: JPY 1290000 (hundredths) -> ¥12,900 if the guard is lifted", () => {
+    const s = Core.formatMoneyMinor(1290000, "JPY", "ja-JP");
+    expect(s).toMatch(/12,?900/); // 1290000/100 = 12900, Intl JPY has 0 digits
+    expect(s).not.toMatch(/\./); // no decimals for JPY
   });
-  it("hydratedPriceString builds a range with an en-dash", () => {
+  it("absurd / NaN / negative / string -> '' (keep indexed price)", () => {
+    expect(Core.formatMoneyMinor(1e30, "USD", "en-US")).toBe("");
+    expect(Core.formatMoneyMinor(NaN, "USD", "en-US")).toBe("");
+    expect(Core.formatMoneyMinor(-5, "USD", "en-US")).toBe("");
+    expect(Core.formatMoneyMinor("1000" as unknown as number, "USD", "en-US")).toBe("");
+  });
+  it("hydratedPriceString builds a range with an en-dash (USD)", () => {
     const s = Core.hydratedPriceString({ price_min: 1000, price_max: 3000 }, "USD", "en-US");
     expect(s).toMatch(/–/);
+    expect(s).toMatch(/10\.00/);
+    expect(s).toMatch(/30\.00/);
   });
   it("null parse → null (keep indexed price)", () => {
     expect(Core.hydratedPriceString({ price: 9.99 }, "USD", "en-US")).toBeNull();
+  });
+});
+
+describe("Phase 13b C3 — currency eligibility guard (2-digit only, until verified)", () => {
+  it("currencyHydrationEligible: USD/EUR yes; JPY/KWD no", () => {
+    expect(Core.currencyHydrationEligible("USD")).toBe(true);
+    expect(Core.currencyHydrationEligible("EUR")).toBe(true);
+    expect(Core.currencyHydrationEligible("JPY")).toBe(false); // 0 digits
+    expect(Core.currencyHydrationEligible("KWD")).toBe(false); // 3 digits
+  });
+  it("hydratedPriceString silently falls back (null) for non-2-digit currencies", () => {
+    expect(Core.hydratedPriceString({ price_min: 1290000, price_max: 1290000 }, "JPY", "ja-JP")).toBeNull();
+    expect(Core.hydratedPriceString({ price: 5000 }, "KWD", "ar")).toBeNull(); // KWD 3 digits
+    expect(Core.hydratedPriceString({ price: 5000 }, "BHD", "ar")).toBeNull(); // BHD 3 digits
+  });
+  it("USD 12900 hydrates to $129.00", () => {
+    expect(Core.hydratedPriceString({ price: 12900 }, "USD", "en-US")).toMatch(/129\.00/);
+  });
+  it("absurd value in the parse -> null (not a giant number)", () => {
+    expect(Core.hydratedPriceString({ price: 1e30 }, "USD", "en-US")).toBeNull();
+    expect(Core.parseProductJsPrices({ price: 1e30 })).toBeNull();
   });
 });
 

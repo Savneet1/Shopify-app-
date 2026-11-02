@@ -49,6 +49,27 @@ export async function loadCombinedMode(exec: Exec, shopId: string): Promise<Comb
   return normalizeCombinedMode(typeof raw === "string" ? raw : undefined);
 }
 
+/**
+ * Phase 13b C4 — count products that HAVE a combined-listing role but whose
+ * ACTIVE-version search doc still has a NULL role (i.e. the doc was built before
+ * Phase 13 / migration 0018 and has not been re-projected). When a non-default
+ * hide mode is set, these products would silently escape the hide, so the admin
+ * surfaces this count and enqueues a backfill. Returns 0 when there is no active
+ * version. RLS-scoped via the tenant exec.
+ */
+export async function countStaleCombinedDocs(exec: Exec, shopId: string): Promise<number> {
+  const rows = await exec.rows<{ n: number }>(
+    `SELECT count(*)::int AS n
+     FROM product p
+     JOIN index_version iv ON iv.shop_id = p.shop_id AND iv.status = 'active'
+     JOIN product_search_doc d ON d.shop_id = p.shop_id AND d.index_version_id = iv.id AND d.product_id = p.id
+     WHERE p.shop_id = $1::uuid AND p.deleted_at IS NULL
+       AND p.combined_role IS NOT NULL AND d.combined_role IS NULL`,
+    [shopId],
+  );
+  return rows[0]?.n ?? 0;
+}
+
 /** Save (upsert) the shop's combined-listing mode. Validated+clamped to the
  * three allowed values; anything else becomes show_all. */
 export async function saveCombinedMode(exec: Exec, shopId: string, mode: unknown): Promise<CombinedMode> {

@@ -27,6 +27,7 @@ import {
   activateIndexVersion,
   refreshDocInActiveVersion,
   refreshDocsForProducts,
+  refreshCombinedParentDocs,
   pruneOldVersions,
 } from "~/lib/index/engine";
 import {
@@ -215,7 +216,7 @@ export async function applyProductUpsert(
   np: NormalizedProduct,
 ): Promise<void> {
   await runner(shopId, async (e) => {
-    const { id, applied } = await upsertProduct(e, shopId, np.product);
+    const { id, applied, oldCombinedRole, oldCombinedParentGid } = await upsertProduct(e, shopId, np.product);
     if (applied) {
       for (const v of np.variants) await upsertVariant(e, shopId, id, v);
       if (np.variantsComplete !== false) {
@@ -230,6 +231,14 @@ export async function applyProductUpsert(
     // back-in-stock notifications, atomically with the doc refresh. No-op (one
     // existence SELECT) for products no one is subscribed to.
     await detectAndQueueRestock(e, shopId, id);
+    // Phase 13b C2: keep combined parents' derived aggregate fresh. Refresh the
+    // NEW parent (if this product is now a child) AND the OLD parent (if it was a
+    // child and has been reparented or un-childed). Empty set for a non-combined
+    // product → NO extra query (the pre-image came free from the upsert CTE).
+    const parents = new Set<string>();
+    if (np.product.combinedRole === "CHILD" && np.product.combinedParentGid) parents.add(np.product.combinedParentGid);
+    if (oldCombinedRole === "CHILD" && oldCombinedParentGid) parents.add(oldCombinedParentGid);
+    if (parents.size > 0) await refreshCombinedParentDocs(e, shopId, [...parents]);
   });
 }
 
@@ -239,12 +248,19 @@ export async function applyProductDeletion(
   shopifyProductGid: string,
 ): Promise<void> {
   await runner(shopId, async (e) => {
-    const rows = await e.rows<{ id: string }>(
-      `SELECT id FROM product WHERE shop_id=$1::uuid AND shopify_product_gid=$2`,
+    // Read the combined role/parent in the SAME lookup that resolves the id, so
+    // a non-combined deletion incurs NO extra query (C2).
+    const rows = await e.rows<{ id: string; combined_role: string | null; combined_parent_gid: string | null }>(
+      `SELECT id, combined_role, combined_parent_gid FROM product WHERE shop_id=$1::uuid AND shopify_product_gid=$2`,
       [shopId, shopifyProductGid],
     );
     await softDeleteProductByGid(e, shopId, shopifyProductGid);
     if (rows[0]) await refreshDocInActiveVersion(e, shopId, rows[0].id);
+    // Phase 13b C2: a deleted child no longer counts toward its parent (C1
+    // visibility) — refresh the parent so count/range update immediately.
+    if (rows[0]?.combined_role === "CHILD" && rows[0].combined_parent_gid) {
+      await refreshCombinedParentDocs(e, shopId, [rows[0].combined_parent_gid]);
+    }
   });
 }
 

@@ -373,6 +373,9 @@
     }
     function hydrateGrid(targets) {
       if (cfg.priceHydration !== true || targets.length === 0) return;
+      // Phase 13b C3: only hydrate 2-digit currencies until the Ajax money
+      // normalisation is verified; otherwise keep the indexed price (no request).
+      if (!Core.currencyHydrationEligible(cfg.activeCurrency || cfg.currency)) return;
       hydrateToken++;
       var myToken = hydrateToken;
       var handles = targets.map(function (x) { return x.handle; });

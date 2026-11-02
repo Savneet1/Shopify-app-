@@ -64,6 +64,12 @@ export interface CollectionInput {
 export interface UpsertResult {
   id: string;
   applied: boolean;
+  /** Phase 13b C2: the combined-listing role/parent this product had BEFORE this
+   * upsert (null when it was new or not combined). Captured in the SAME statement
+   * (a CTE pre-image) so it costs no extra round-trip — used to refresh the OLD
+   * parent when a child is reparented or un-childed. */
+  oldCombinedRole?: "PARENT" | "CHILD" | null;
+  oldCombinedParentGid?: string | null;
 }
 
 const toDate = (v?: string | Date | null): Date | null =>
@@ -96,8 +102,12 @@ export async function upsertProduct(
     p.combinedRole ?? null,
     p.combinedParentGid ?? null,
   ];
-  const rows = await exec.rows<{ id: string }>(
-    `INSERT INTO product
+  const rows = await exec.rows<{ id: string; old_parent_gid: string | null; old_role: string | null }>(
+    `WITH prev AS (
+       SELECT combined_parent_gid AS op, combined_role AS orole
+       FROM product WHERE shop_id=$1::uuid AND shopify_product_gid=$2
+     )
+     INSERT INTO product
       (shop_id, shopify_product_gid, handle, title, description, vendor,
        product_type, status, tags, options, total_inventory, tracks_inventory,
        shopify_updated_at, featured_image_url, featured_image_alt, online_store_url,
@@ -117,11 +127,20 @@ export async function upsertProduct(
      WHERE product.shopify_updated_at IS NULL
         OR EXCLUDED.shopify_updated_at IS NULL
         OR EXCLUDED.shopify_updated_at >= product.shopify_updated_at
-     RETURNING id`,
+     RETURNING id,
+       (SELECT op FROM prev) AS old_parent_gid,
+       (SELECT orole FROM prev) AS old_role`,
     params,
   );
-  if (rows[0]) return { id: rows[0].id, applied: true };
-  // Conflict skipped by the monotonic guard: fetch the existing id.
+  if (rows[0]) {
+    return {
+      id: rows[0].id, applied: true,
+      oldCombinedRole: (rows[0].old_role as "PARENT" | "CHILD" | null) ?? null,
+      oldCombinedParentGid: rows[0].old_parent_gid ?? null,
+    };
+  }
+  // Conflict skipped by the monotonic guard: the row is unchanged, so old == new
+  // (no reparent happened). Fetch the existing id.
   const existing = await exec.rows<{ id: string }>(
     `SELECT id FROM product WHERE shop_id=$1::uuid AND shopify_product_gid=$2`,
     [shopId, p.shopifyProductGid],

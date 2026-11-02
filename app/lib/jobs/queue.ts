@@ -20,6 +20,9 @@ export const QUEUE = {
   restockDrain: "restock-drain",
   // Phase 12.1 Q2: async double-opt-in confirmation send (singleton per sub).
   restockConfirm: "restock-confirm",
+  // Phase 13b C4: bounded active-version doc re-projection (singleton per shop),
+  // used to correct legacy docs missing the combined-listing role.
+  reindexDocs: "reindex-docs",
 } as const;
 
 let boss: PgBoss | null = null;
@@ -70,6 +73,9 @@ export async function startQueues(instance?: PgBoss): Promise<PgBoss> {
   await b.createQueue(QUEUE.restockDrain, { policy: "stately", retryLimit: 3, retryBackoff: true, retryDelay: 15 });
   // Confirmation send: at most one per subscription; bounded retries on transient.
   await b.createQueue(QUEUE.restockConfirm, { policy: "stately", retryLimit: 5, retryBackoff: true, retryDelay: 15 });
+  // Phase 13b C4: at most one reindex queued + one active per shop (stately), so
+  // repeated admin saves never pile up doc re-projections for a shop.
+  await b.createQueue(QUEUE.reindexDocs, { policy: "stately", retryLimit: 3, retryBackoff: true, retryDelay: 15 });
   await b.createQueue(QUEUE.catalogIncremental, {
     policy: "short",
     retryLimit: 8,
@@ -138,6 +144,16 @@ export async function enqueueIncremental(
   return b.send(QUEUE.catalogIncremental, payload, {
     singletonKey: payload.dedupeKey,
   });
+}
+
+/**
+ * Phase 13b C4: enqueue a bounded re-projection of the active-version docs for a
+ * shop (singleton per shop) to correct legacy docs missing the combined-listing
+ * role. Returns the job id, or null when one is already queued/active (stately).
+ */
+export async function enqueueReindexDocs(shopId: string): Promise<string | null> {
+  const b = await ensureQueues();
+  return b.send(QUEUE.reindexDocs, { shopId }, { singletonKey: `reindex-docs:${shopId}` });
 }
 
 /** Enqueue a per-shop back-in-stock notification drain. singletonKey = shopId so

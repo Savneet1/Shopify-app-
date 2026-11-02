@@ -93,8 +93,12 @@ function docInsertSql(whereFrag: string): string {
         || (CASE WHEN p.combined_role IS NOT NULL THEN
               jsonb_build_object('combinedRole', p.combined_role, 'combinedParentGid', p.combined_parent_gid)
               || (CASE WHEN p.combined_role = 'PARENT' THEN
-                    jsonb_build_object('combinedChildCount', COALESCE(cl.child_count, 0),
-                                       'combinedPriceMin', cl.cmin, 'combinedPriceMax', cl.cmax)
+                    jsonb_build_object('combinedChildCount', COALESCE(cl.child_count, 0))
+                    -- Range only when there is at least one visible child with a
+                    -- price; a parent with zero visible children has NO range.
+                    || (CASE WHEN cl.cmin IS NOT NULL
+                          THEN jsonb_build_object('combinedPriceMin', cl.cmin, 'combinedPriceMax', cl.cmax)
+                          ELSE '{}'::jsonb END)
                   ELSE '{}'::jsonb END)
             ELSE '{}'::jsonb END) AS doc,
         btrim(concat_ws(' ',
@@ -126,17 +130,32 @@ function docInsertSql(whereFrag: string): string {
         FROM product_collection pc JOIN collection col ON col.id = pc.collection_id AND col.deleted_at IS NULL
         WHERE pc.product_id = p.id
       ) c ON TRUE
-      -- Phase 13.5: for a PARENT, derive the child count + aggregate price range
-      -- from the CHILD rows (which carry combined_parent_gid). Empty for others.
+      -- Phase 13.5/13b C1: for a PARENT, derive the child count + aggregate
+      -- price range from the CHILD rows (which carry combined_parent_gid) — but
+      -- ONLY children that are VISIBLE by the SAME rule the search docs use
+      -- (status ACTIVE, published i.e. online_store_url present, not deleted).
+      -- Draft/archived/unpublished/soft-deleted children NEVER affect the count
+      -- or range. childCount counts every visible child (incl. out-of-stock);
+      -- the price range is over PURCHASABLE (available) variants when at least
+      -- one visible child is available, otherwise over all visible children's
+      -- variants. Empty for non-PARENT rows.
       LEFT JOIN LATERAL (
-        SELECT count(*)::int AS child_count, min(cv.pmin) AS cmin, max(cv.pmax) AS cmax
-        FROM product cp
-        LEFT JOIN LATERAL (
-          SELECT min(vv.price) AS pmin, max(vv.price) AS pmax
-          FROM variant vv WHERE vv.product_id = cp.id AND vv.deleted_at IS NULL
-        ) cv ON TRUE
-        WHERE cp.shop_id = p.shop_id AND cp.deleted_at IS NULL
-          AND p.combined_role = 'PARENT' AND cp.combined_parent_gid = p.shopify_product_gid
+        SELECT count(*)::int AS child_count,
+               CASE WHEN count(c.pmin_avail) > 0 THEN min(c.pmin_avail) ELSE min(c.pmin_all) END AS cmin,
+               CASE WHEN count(c.pmax_avail) > 0 THEN max(c.pmax_avail) ELSE max(c.pmax_all) END AS cmax
+        FROM (
+          SELECT cp.id,
+                 min(vv.price) AS pmin_all,
+                 max(vv.price) AS pmax_all,
+                 min(vv.price) FILTER (WHERE vv.available_for_sale = true) AS pmin_avail,
+                 max(vv.price) FILTER (WHERE vv.available_for_sale = true) AS pmax_avail
+          FROM product cp
+          LEFT JOIN variant vv ON vv.product_id = cp.id AND vv.deleted_at IS NULL
+          WHERE cp.shop_id = p.shop_id AND cp.deleted_at IS NULL
+            AND cp.status = 'ACTIVE' AND cp.online_store_url IS NOT NULL
+            AND p.combined_role = 'PARENT' AND cp.combined_parent_gid = p.shopify_product_gid
+          GROUP BY cp.id
+        ) c
       ) cl ON TRUE
       WHERE ${whereFrag}
     )
@@ -445,8 +464,48 @@ export async function refreshDocsForProducts(
        AND p.id = d.product_id AND p.id = ANY($3::uuid[]) AND p.deleted_at IS NOT NULL`,
     [shopId, active.id, productIds],
   );
+  // Phase 13b C2: if any refreshed product is a combined CHILD, its parent's
+  // derived aggregate may now be stale — refresh each distinct parent once.
+  const parents = await exec.rows<{ gid: string }>(
+    `SELECT DISTINCT combined_parent_gid AS gid FROM product
+     WHERE shop_id=$1::uuid AND id = ANY($2::uuid[])
+       AND combined_role='CHILD' AND combined_parent_gid IS NOT NULL`,
+    [shopId, productIds],
+  );
+  if (parents.length > 0) await refreshCombinedParentDocs(exec, shopId, parents.map((r) => r.gid));
   await rebuildVocabulary(exec, shopId, active.id);
   return productIds.length;
+}
+
+/**
+ * Phase 13b C2 — re-project the active-version doc(s) for the combined-listing
+ * PARENT products named by `parentGids`, so a child change is reflected in the
+ * parent's derived childCount / aggregate price range immediately (without
+ * waiting for the parent itself to change). Deduped; one bounded statement.
+ *
+ * Re-projection is idempotent and reads only CURRENT child state via the same
+ * `docInsertSql` aggregate, so a replayed/out-of-order child update (skipped by
+ * the monotonic guard, leaving child data unchanged) yields the same parent doc.
+ * Vocabulary is NOT rebuilt — a parent's searchable tokens do not change when a
+ * child's price/availability changes, so there is nothing new to learn.
+ */
+export async function refreshCombinedParentDocs(
+  exec: Exec,
+  shopId: string,
+  parentGids: string[],
+): Promise<number> {
+  const gids = [...new Set(parentGids.filter((g): g is string => typeof g === "string" && g.length > 0))];
+  if (gids.length === 0) return 0;
+  const active = await getActiveVersion(exec, shopId);
+  if (!active) return 0;
+  await exec.run(
+    docInsertSql(
+      `p.shop_id=$1::uuid AND p.deleted_at IS NULL AND p.combined_role='PARENT'
+       AND p.shopify_product_gid = ANY($3::text[])`,
+    ),
+    [shopId, active.id, gids],
+  );
+  return gids.length;
 }
 
 /**
