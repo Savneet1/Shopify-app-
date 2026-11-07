@@ -1,0 +1,94 @@
+name: Benchmark (manual)
+
+# Phase 14.1f — MANUAL-ONLY performance harness on a GitHub-hosted runner, so the
+# maintainer can get latency numbers on consistent hardware (the build sandbox is
+# a shared node where absolute ms are not representative). This does NOT run on
+# push and does NOT touch the Live Prisma Check workflow. It builds a synthetic
+# catalog at 10k and 100k through the REAL sync→index path and runs the query
+# sets as app_runtime with RLS on, uploading the JSON + markdown as an artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sizes:
+        description: "Comma-separated catalog sizes to benchmark"
+        default: "10000,100000"
+        required: false
+      n:
+        description: "Iterations per query case"
+        default: "200"
+        required: false
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: postgresql://app_runtime:runtime_pw@localhost:5432/boostlike_test
+      DIRECT_DATABASE_URL: postgresql://app_owner:owner_pw@localhost:5432/boostlike_test
+      TEST_DATABASE_URL: postgresql://app_runtime:runtime_pw@localhost:5432/boostlike_test
+      TEST_DIRECT_DATABASE_URL: postgresql://app_owner:owner_pw@localhost:5432/boostlike_test
+      SHOPIFY_API_SECRET: test_api_secret_phase1
+      LOG_LEVEL: warn
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Ensure psql client
+        run: command -v psql >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y postgresql-client)
+
+      - name: Bootstrap roles + database
+        run: |
+          set -euo pipefail
+          psql "postgresql://postgres:postgres@localhost:5432/postgres" -v ON_ERROR_STOP=1 -f prisma/roles.sql
+          psql "postgresql://postgres:postgres@localhost:5432/postgres" -v ON_ERROR_STOP=1 -c "ALTER ROLE app_owner PASSWORD 'owner_pw';"
+          psql "postgresql://postgres:postgres@localhost:5432/postgres" -v ON_ERROR_STOP=1 -c "ALTER ROLE app_runtime PASSWORD 'runtime_pw';"
+          psql "postgresql://postgres:postgres@localhost:5432/postgres" -v ON_ERROR_STOP=1 -c "CREATE DATABASE boostlike_test OWNER app_owner;"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply migrations
+        run: bash scripts/db-apply.sh "$TEST_DIRECT_DATABASE_URL"
+
+      - name: pg-boss schema (owner)
+        run: BOSS_MIGRATE_URL="$TEST_DIRECT_DATABASE_URL" npm run pgboss:install
+
+      - name: Run benchmark at each size
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra SIZES <<< "${{ github.event.inputs.sizes }}"
+          for s in "${SIZES[@]}"; do
+            echo "===== benchmark size=$s ====="
+            npm run bench -- --size="$s" --n="${{ github.event.inputs.n }}" | tee -a "bench-$s.log"
+          done
+
+      - name: Upload benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: |
+            scripts/bench/out/*.json
+            docs/PHASE14_BENCH.md
+            bench-*.log
+          if-no-files-found: warn

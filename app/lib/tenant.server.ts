@@ -93,3 +93,26 @@ export async function withShopExec<T>(
 ): Promise<T> {
   return withShop(shopId, (tx) => fn(prismaExec(tx)));
 }
+
+/**
+ * Phase 14.4a — default per-request statement_timeout for PUBLIC proxy query
+ * paths. One pathological query cannot hold the database: it is cancelled
+ * (SQLSTATE 57014) and the proxy handler's catch turns that into a clean native
+ * fallback (never a 5xx). Admin/sync/build paths deliberately do NOT use this
+ * (they run long, chunked work); they keep the transaction-level bound.
+ */
+export const PROXY_STATEMENT_TIMEOUT_MS = Math.max(
+  250,
+  Math.min(10000, Number(process.env.PROXY_STATEMENT_TIMEOUT_MS || 2000)),
+);
+export async function withShopExecTimed<T>(
+  shopId: string,
+  fn: (exec: Exec) => Promise<T>,
+  timeoutMs: number = PROXY_STATEMENT_TIMEOUT_MS,
+): Promise<T> {
+  const ms = Math.max(100, Math.floor(timeoutMs));
+  return withShop(shopId, async (tx) => {
+    await tx.$executeRawUnsafe(`SET LOCAL statement_timeout = ${ms}`);
+    return fn(prismaExec(tx));
+  });
+}

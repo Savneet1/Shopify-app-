@@ -21,6 +21,11 @@ export default function handleRequest(
   // Attach Shopify's required document headers (CSP frame-ancestors so the app
   // can be embedded in the Shopify admin iframe).
   addDocumentResponseHeaders(request, responseHeaders);
+  // Phase 14.4f: defence-in-depth headers on every admin document response.
+  // frame-ancestors is supplied by addDocumentResponseHeaders above; add the
+  // sniffing + referrer protections (only when not already set).
+  if (!responseHeaders.has("X-Content-Type-Options")) responseHeaders.set("X-Content-Type-Options", "nosniff");
+  if (!responseHeaders.has("Referrer-Policy")) responseHeaders.set("Referrer-Policy", "no-referrer");
 
   const userAgent = request.headers.get("user-agent");
   const callbackName =

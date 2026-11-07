@@ -7,6 +7,10 @@ export default [
   // Managed-install / token-exchange auth splat.
   route("auth/*", "routes/auth.$.tsx"),
 
+  // Phase 14.4i: liveness/readiness probe (DB connectivity only, no auth, no
+  // tenant data). Allowlisted in the authorization audit.
+  route("healthz", "routes/healthz.tsx"),
+
   // Embedded admin surface.
   route("app", "routes/app.tsx", [
     index("routes/app._index.tsx"),

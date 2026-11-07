@@ -102,8 +102,13 @@ export function combinedFromDoc(d: any): SearchProduct["combined"] | undefined {
   };
   if (d.combinedRole === "PARENT") {
     c.childCount = typeof d.combinedChildCount === "number" ? d.combinedChildCount : 0;
-    c.priceMin = d.combinedPriceMin != null ? String(d.combinedPriceMin) : null;
-    c.priceMax = d.combinedPriceMax != null ? String(d.combinedPriceMax) : null;
+    // Phase 14.6a: a parent with zero visible children has NO range in the doc;
+    // OMIT the price keys entirely rather than emitting them as null (which read
+    // as "a range exists but is unknown"). Only set them when the doc carries them.
+    if (d.combinedPriceMin != null && d.combinedPriceMax != null) {
+      c.priceMin = String(d.combinedPriceMin);
+      c.priceMax = String(d.combinedPriceMax);
+    }
   }
   return c;
 }

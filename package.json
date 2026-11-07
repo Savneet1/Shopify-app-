@@ -20,6 +20,7 @@
     "worker:smoke": "node scripts/worker-smoke.mjs",
     "test": "vitest run",
     "test:ci-parity": "node scripts/ci-parity.mjs",
+    "bench": "vite-node -c scripts/bench/vite.config.ts scripts/bench/run.ts",
     "test:watch": "vitest",
     "test:isolation": "vitest run test/database-rls.test.ts test/tenant-withshop.test.ts"
   },
@@ -52,5 +53,9 @@
     "vite": "^6.0.0",
     "vite-tsconfig-paths": "^5.1.4",
     "vitest": "^2.1.8"
+  },
+  "overrides": {
+    "body-parser": "1.20.9",
+    "qs": "6.17.1"
   }
 }

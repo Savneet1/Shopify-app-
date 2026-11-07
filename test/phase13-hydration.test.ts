@@ -84,6 +84,17 @@ describe("Phase 13b C3 — currency eligibility guard (2-digit only, until verif
     expect(Core.hydratedPriceString({ price: 1e30 }, "USD", "en-US")).toBeNull();
     expect(Core.parseProductJsPrices({ price: 1e30 })).toBeNull();
   });
+  // Phase 14.6b: a missing / invalid currency must keep the indexed price (null),
+  // never a bare unlabelled number.
+  it("missing or invalid currency → null (never a bare number)", () => {
+    expect(Core.currencyHydrationEligible(undefined)).toBe(false);
+    expect(Core.currencyHydrationEligible("")).toBe(false);
+    expect(Core.currencyHydrationEligible("US")).toBe(false);
+    expect(Core.currencyHydrationEligible("DOLLAR")).toBe(false);
+    expect(Core.hydratedPriceString({ price: 12900 }, undefined as unknown as string, "en-US")).toBeNull();
+    expect(Core.hydratedPriceString({ price: 12900 }, "", "en-US")).toBeNull();
+    expect(Core.hydratedPriceString({ price: 12900 }, "US$", "en-US")).toBeNull();
+  });
 });
 
 describe("Phase 13.3 — runHydration orchestrator (bounded, cached, abortable)", () => {

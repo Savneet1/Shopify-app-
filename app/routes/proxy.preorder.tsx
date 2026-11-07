@@ -1,6 +1,6 @@
 import type { LoaderFunctionArgs } from "react-router";
 import { handleProxy } from "~/lib/search/proxy.server";
-import { withShopExec } from "~/lib/tenant.server";
+import { withShopExecTimed as withShopExec } from "~/lib/tenant.server";
 import { resolvePreorder } from "~/lib/preorder/annotate.server";
 
 /**

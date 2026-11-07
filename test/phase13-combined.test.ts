@@ -6,6 +6,7 @@ import {
   refreshDocInActiveVersion, refreshDocsForProducts, reindexVersionDocs,
 } from "~/lib/index/engine";
 import { storefrontSearchWithExec } from "~/lib/search/storefront";
+import { combinedFromDoc } from "~/lib/search/query";
 import { predictiveWithExec } from "~/lib/search/predictive";
 import { catalogSuggestionsWithExec } from "~/lib/search/suggest";
 import { getRecommendations } from "~/lib/recommend/engine";
@@ -384,6 +385,21 @@ describe("Phase 13.5 — pure units (setting + predicate)", () => {
     expect(normalizeCombinedMode("garbage")).toBe("show_all");
     expect(normalizeCombinedMode(null)).toBe("show_all");
     expect(normalizeCombinedMode(42)).toBe("show_all");
+  });
+
+  // Phase 14.6a: a PARENT doc with no range (zero visible children) must OMIT
+  // the price keys in the payload, not emit them as null.
+  it("combinedFromDoc omits price keys when the doc has no range", () => {
+    const withRange = combinedFromDoc({ combinedRole: "PARENT", combinedParentGid: null, combinedChildCount: 2, combinedPriceMin: 10, combinedPriceMax: 30 });
+    expect(withRange).toMatchObject({ role: "PARENT", childCount: 2, priceMin: "10", priceMax: "30" });
+    const noRange = combinedFromDoc({ combinedRole: "PARENT", combinedParentGid: null, combinedChildCount: 0 });
+    expect(noRange).toMatchObject({ role: "PARENT", childCount: 0 });
+    expect(noRange).not.toHaveProperty("priceMin");
+    expect(noRange).not.toHaveProperty("priceMax");
+    const child = combinedFromDoc({ combinedRole: "CHILD", combinedParentGid: "gid://shopify/Product/1" });
+    expect(child).toMatchObject({ role: "CHILD", parentGid: "gid://shopify/Product/1" });
+    expect(child).not.toHaveProperty("priceMin");
+    expect(combinedFromDoc({ combinedRole: null })).toBeUndefined();
   });
 
   it("combinedHideFor maps mode → discriminant", () => {

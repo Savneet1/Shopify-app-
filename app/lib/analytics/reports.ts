@@ -1,6 +1,7 @@
 import type { Exec } from "~/lib/db/executor";
 import { Params } from "~/lib/search/filters";
 import { loadAnalyticsSettings } from "./settings";
+import { rollupCoverage, daysInclusive, ROLLUP_MIN_WINDOW_DAYS } from "./rollup";
 
 /**
  * Phase 11.4 — reporting. Parameterized queries over analytics_event, ALWAYS
@@ -49,6 +50,71 @@ function windowPredicate(pb: Params, w: DateWindow): string {
 
 const CLICK_TYPES = ["result_click", "predictive_click", "suggestion_click", "recommendation_click"];
 
+/**
+ * Phase 14.6c — rollup read helpers. The event_type/surface reports
+ * (summaryReport, dailyTrend, perSurface) read analytics_rollup_daily for the
+ * COMPLETED-day portion of the window when it is fully covered, and raw
+ * analytics_event only for the current (partial) day — a few thousand rollup
+ * rows instead of millions of raw rows. If the rollup does not yet enclose the
+ * completed window (e.g. mid-backfill, or the rollup job never ran), the report
+ * falls back to the pure-raw path, so results are byte-identical either way.
+ * The per-query reports are unaffected: the rollup stores no query text.
+ */
+function utcDayStr(d: Date): string { return d.toISOString().slice(0, 10); }
+function addDayStr(day: string, n: number): string {
+  const d = new Date(day + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return utcDayStr(d);
+}
+/** Split a window into its completed-day sub-window and whether "today" is in it. */
+function splitWindow(w: DateWindow, now: Date): { completed: DateWindow | null; today: string | null } {
+  const today = utcDayStr(now);
+  const yesterday = addDayStr(today, -1);
+  const completedTo = w.toDay < yesterday ? w.toDay : yesterday; // min(toDay, yesterday)
+  const completed = w.fromDay <= completedTo ? { fromDay: w.fromDay, toDay: completedTo } : null;
+  const today_ = w.toDay >= today && w.fromDay <= today ? today : null;
+  return { completed, today: today_ };
+}
+
+interface SummaryCounts { searches: number; zero: number; clicks: number; atc: number; redirects: number }
+const ZERO_COUNTS: SummaryCounts = { searches: 0, zero: 0, clicks: 0, atc: 0, redirects: 0 };
+function addCounts(a: SummaryCounts, b: SummaryCounts): SummaryCounts {
+  return { searches: a.searches + b.searches, zero: a.zero + b.zero, clicks: a.clicks + b.clicks, atc: a.atc + b.atc, redirects: a.redirects + b.redirects };
+}
+
+/** Raw per-event_type counts over a window (the original summary aggregate). */
+async function rawSummaryCounts(exec: Exec, shopId: string, w: DateWindow): Promise<SummaryCounts> {
+  const pb = new Params(); const sid = pb.add(shopId); const win = windowPredicate(pb, w); const clicks = pb.add(CLICK_TYPES);
+  const rows = await exec.rows<{ searches: number; zero: number; clicks: number; atc: number; redirects: number }>(
+    `SELECT
+       count(*) FILTER (WHERE event_type='search_performed')::int AS searches,
+       count(*) FILTER (WHERE event_type='search_zero_result')::int AS zero,
+       count(*) FILTER (WHERE event_type = ANY(${clicks}::text[]))::int AS clicks,
+       count(*) FILTER (WHERE event_type='add_to_cart_from_search')::int AS atc,
+       count(*) FILTER (WHERE event_type='redirect_followed')::int AS redirects
+     FROM analytics_event WHERE shop_id=${sid}::uuid AND ${win}`,
+    pb.values,
+  );
+  const r = rows[0] ?? ZERO_COUNTS;
+  return { searches: Number(r.searches), zero: Number(r.zero), clicks: Number(r.clicks), atc: Number(r.atc), redirects: Number(r.redirects) };
+}
+
+/** Rollup per-event_type counts over a COMPLETED-day window (day-keyed). */
+async function rollupSummaryCounts(exec: Exec, shopId: string, w: DateWindow): Promise<SummaryCounts> {
+  const pb = new Params(); const sid = pb.add(shopId); const f = pb.add(w.fromDay); const t = pb.add(w.toDay); const clicks = pb.add(CLICK_TYPES);
+  const rows = await exec.rows<{ searches: number; zero: number; clicks: number; atc: number; redirects: number }>(
+    `SELECT
+       coalesce(sum(event_count) FILTER (WHERE event_type='search_performed'),0)::int AS searches,
+       coalesce(sum(event_count) FILTER (WHERE event_type='search_zero_result'),0)::int AS zero,
+       coalesce(sum(event_count) FILTER (WHERE event_type = ANY(${clicks}::text[])),0)::int AS clicks,
+       coalesce(sum(event_count) FILTER (WHERE event_type='add_to_cart_from_search'),0)::int AS atc,
+       coalesce(sum(event_count) FILTER (WHERE event_type='redirect_followed'),0)::int AS redirects
+     FROM analytics_rollup_daily
+     WHERE shop_id=${sid}::uuid AND day >= ${f}::date AND day <= ${t}::date`,
+    pb.values,
+  );
+  const r = rows[0] ?? ZERO_COUNTS;
+  return { searches: Number(r.searches), zero: Number(r.zero), clicks: Number(r.clicks), atc: Number(r.atc), redirects: Number(r.redirects) };
+}
+
 export interface SummaryReport {
   window: DateWindow;
   searches: number;
@@ -62,38 +128,32 @@ export interface SummaryReport {
 }
 
 export async function summaryReport(
-  exec: Exec, shopId: string, w: DateWindow,
+  exec: Exec, shopId: string, w: DateWindow, now: Date = new Date(),
 ): Promise<SummaryReport> {
-  const pb = new Params();
-  const sid = pb.add(shopId);
-  const win = windowPredicate(pb, w);
-  const clicks = pb.add(CLICK_TYPES);
-  const rows = await exec.rows<{
-    searches: number; zero: number; clicks: number; atc: number; redirects: number;
-  }>(
-    `SELECT
-       count(*) FILTER (WHERE event_type='search_performed')::int AS searches,
-       count(*) FILTER (WHERE event_type='search_zero_result')::int AS zero,
-       count(*) FILTER (WHERE event_type = ANY(${clicks}::text[]))::int AS clicks,
-       count(*) FILTER (WHERE event_type='add_to_cart_from_search')::int AS atc,
-       count(*) FILTER (WHERE event_type='redirect_followed')::int AS redirects
-     FROM analytics_event
-     WHERE shop_id=${sid}::uuid AND ${win}`,
-    pb.values,
-  );
-  const r = rows[0] ?? { searches: 0, zero: 0, clicks: 0, atc: 0, redirects: 0 };
-  const searches = Number(r.searches);
+  const { completed, today } = splitWindow(w, now);
+  // Long-range windows read the rollup for the completed portion when it fully
+  // encloses it; short windows and any uncovered window take the single raw
+  // aggregate over the whole window (byte-identical, unchanged query shape).
+  const longRange = !!completed && daysInclusive(completed.fromDay, completed.toDay) > ROLLUP_MIN_WINDOW_DAYS;
+  let counts: SummaryCounts;
+  if (longRange && (await rollupCoverage(exec, shopId, completed!.fromDay, completed!.toDay)).covered) {
+    counts = await rollupSummaryCounts(exec, shopId, completed!);
+    if (today) counts = addCounts(counts, await rawSummaryCounts(exec, shopId, { fromDay: today, toDay: today }));
+  } else {
+    counts = await rawSummaryCounts(exec, shopId, w);
+  }
+  const searches = counts.searches;
   const ratio = (num: number) => (searches > 0 ? num / searches : 0);
   return {
     window: w,
     searches,
-    zeroResults: Number(r.zero),
-    zeroResultRate: ratio(Number(r.zero)),
-    clicks: Number(r.clicks),
-    clickThroughRate: ratio(Number(r.clicks)),
-    addToCartFromSearch: Number(r.atc),
-    addToCartRate: ratio(Number(r.atc)),
-    redirects: Number(r.redirects),
+    zeroResults: counts.zero,
+    zeroResultRate: ratio(counts.zero),
+    clicks: counts.clicks,
+    clickThroughRate: ratio(counts.clicks),
+    addToCartFromSearch: counts.atc,
+    addToCartRate: ratio(counts.atc),
+    redirects: counts.redirects,
   };
 }
 
@@ -164,33 +224,65 @@ export async function queriesWithNoClicks(exec: Exec, shopId: string, w: DateWin
 }
 
 export interface SurfaceRow { surface: string; events: number }
-export async function perSurface(exec: Exec, shopId: string, w: DateWindow): Promise<SurfaceRow[]> {
-  const pb = new Params();
-  const sid = pb.add(shopId);
-  const win = windowPredicate(pb, w);
-  return exec.rows<SurfaceRow>(
-    `SELECT surface, count(*)::int AS events FROM analytics_event
-     WHERE shop_id=${sid}::uuid AND ${win}
-     GROUP BY surface ORDER BY events DESC, surface ASC`,
-    pb.values,
-  );
+export async function perSurface(exec: Exec, shopId: string, w: DateWindow, now: Date = new Date()): Promise<SurfaceRow[]> {
+  const rawSurface = async (win: DateWindow): Promise<SurfaceRow[]> => {
+    const pb = new Params(); const sid = pb.add(shopId); const wp = windowPredicate(pb, win);
+    return exec.rows<SurfaceRow>(
+      `SELECT surface, count(*)::int AS events FROM analytics_event
+       WHERE shop_id=${sid}::uuid AND ${wp} GROUP BY surface`, pb.values);
+  };
+  const { completed, today } = splitWindow(w, now);
+  const longRange = !!completed && daysInclusive(completed.fromDay, completed.toDay) > ROLLUP_MIN_WINDOW_DAYS;
+  if (!longRange || !(await rollupCoverage(exec, shopId, completed!.fromDay, completed!.toDay)).covered) {
+    // pure raw, original ordering
+    const pb = new Params(); const sid = pb.add(shopId); const wp = windowPredicate(pb, w);
+    return exec.rows<SurfaceRow>(
+      `SELECT surface, count(*)::int AS events FROM analytics_event
+       WHERE shop_id=${sid}::uuid AND ${wp} GROUP BY surface ORDER BY events DESC, surface ASC`, pb.values);
+  }
+  const agg = new Map<string, number>();
+  if (completed) {
+    const pb = new Params(); const sid = pb.add(shopId); const f = pb.add(completed.fromDay); const t = pb.add(completed.toDay);
+    const rows = await exec.rows<SurfaceRow>(
+      `SELECT surface, sum(event_count)::int AS events FROM analytics_rollup_daily
+       WHERE shop_id=${sid}::uuid AND day >= ${f}::date AND day <= ${t}::date GROUP BY surface`, pb.values);
+    for (const r of rows) agg.set(r.surface, (agg.get(r.surface) ?? 0) + Number(r.events));
+  }
+  if (today) for (const r of await rawSurface({ fromDay: today, toDay: today })) agg.set(r.surface, (agg.get(r.surface) ?? 0) + Number(r.events));
+  return [...agg.entries()].map(([surface, events]) => ({ surface, events }))
+    .sort((a, b) => b.events - a.events || (a.surface < b.surface ? -1 : a.surface > b.surface ? 1 : 0));
 }
 
 export interface TrendRow { day: string; searches: number; clicks: number; zeroResults: number; addToCart: number }
-export async function dailyTrend(exec: Exec, shopId: string, w: DateWindow): Promise<TrendRow[]> {
-  const pb = new Params();
-  const sid = pb.add(shopId);
-  const win = windowPredicate(pb, w);
-  const clicks = pb.add(CLICK_TYPES);
-  return exec.rows<TrendRow>(
-    `SELECT to_char((occurred_at AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD') AS day,
-       count(*) FILTER (WHERE event_type='search_performed')::int AS searches,
-       count(*) FILTER (WHERE event_type = ANY(${clicks}::text[]))::int AS clicks,
-       count(*) FILTER (WHERE event_type='search_zero_result')::int AS "zeroResults",
-       count(*) FILTER (WHERE event_type='add_to_cart_from_search')::int AS "addToCart"
-     FROM analytics_event
-     WHERE shop_id=${sid}::uuid AND ${win}
-     GROUP BY 1 ORDER BY 1 ASC`,
-    pb.values,
-  );
+export async function dailyTrend(exec: Exec, shopId: string, w: DateWindow, now: Date = new Date()): Promise<TrendRow[]> {
+  const rawTrend = async (win: DateWindow): Promise<TrendRow[]> => {
+    const pb = new Params(); const sid = pb.add(shopId); const wp = windowPredicate(pb, win); const clicks = pb.add(CLICK_TYPES);
+    return exec.rows<TrendRow>(
+      `SELECT to_char((occurred_at AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD') AS day,
+         count(*) FILTER (WHERE event_type='search_performed')::int AS searches,
+         count(*) FILTER (WHERE event_type = ANY(${clicks}::text[]))::int AS clicks,
+         count(*) FILTER (WHERE event_type='search_zero_result')::int AS "zeroResults",
+         count(*) FILTER (WHERE event_type='add_to_cart_from_search')::int AS "addToCart"
+       FROM analytics_event WHERE shop_id=${sid}::uuid AND ${wp}
+       GROUP BY 1 ORDER BY 1 ASC`, pb.values);
+  };
+  const { completed, today } = splitWindow(w, now);
+  const longRange = !!completed && daysInclusive(completed.fromDay, completed.toDay) > ROLLUP_MIN_WINDOW_DAYS;
+  if (!longRange || !(await rollupCoverage(exec, shopId, completed!.fromDay, completed!.toDay)).covered) return rawTrend(w);
+
+  const out: TrendRow[] = [];
+  if (completed) {
+    const pb = new Params(); const sid = pb.add(shopId); const f = pb.add(completed.fromDay); const t = pb.add(completed.toDay); const clicks = pb.add(CLICK_TYPES);
+    const rows = await exec.rows<TrendRow>(
+      `SELECT to_char(day, 'YYYY-MM-DD') AS day,
+         coalesce(sum(event_count) FILTER (WHERE event_type='search_performed'),0)::int AS searches,
+         coalesce(sum(event_count) FILTER (WHERE event_type = ANY(${clicks}::text[])),0)::int AS clicks,
+         coalesce(sum(event_count) FILTER (WHERE event_type='search_zero_result'),0)::int AS "zeroResults",
+         coalesce(sum(event_count) FILTER (WHERE event_type='add_to_cart_from_search'),0)::int AS "addToCart"
+       FROM analytics_rollup_daily WHERE shop_id=${sid}::uuid AND day >= ${f}::date AND day <= ${t}::date
+       GROUP BY day`, pb.values);
+    for (const r of rows) out.push({ day: r.day, searches: Number(r.searches), clicks: Number(r.clicks), zeroResults: Number(r.zeroResults), addToCart: Number(r.addToCart) });
+  }
+  if (today) for (const r of await rawTrend({ fromDay: today, toDay: today })) out.push(r);
+  return out.sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
 }

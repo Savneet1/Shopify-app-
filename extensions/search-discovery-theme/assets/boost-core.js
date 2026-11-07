@@ -849,6 +849,9 @@
    * until the Ajax-API money normalisation is verified on a real store, we only
    * HYDRATE 2-digit currencies; others silently keep the indexed price. */
   function currencyHydrationEligible(currency) {
+    // Phase 14.6b: a missing/invalid currency is NOT eligible — otherwise a bare
+    // number (no currency symbol) could be shown. Require a 3-letter ISO code.
+    if (typeof currency !== "string" || !/^[A-Za-z]{3}$/.test(currency)) return false;
     return currencyFractionDigits(currency) === 2;
   }
   /**

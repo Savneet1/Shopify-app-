@@ -7,6 +7,7 @@ import {
 } from "~/lib/analytics/retention";
 import { purgeRestockData, selectStrandedConfirmations, markConfirmSwept, type RestockMaintenanceResult } from "~/lib/restock/retention";
 import { loadEmailSettingsView } from "~/lib/email/settings";
+import { rollupAnalyticsDaily } from "~/lib/analytics/rollup";
 
 /**
  * Scheduled reconciliation (G8). A periodic tick enumerates INSTALLED shops
@@ -91,6 +92,25 @@ export async function runAnalyticsPartitionMaintenance(
   rootExec: Exec, opts: { now?: Date } = {},
 ): Promise<PartitionMaintenanceResult> {
   return maintainAnalyticsPartitions(rootExec, opts);
+}
+
+/**
+ * Phase 14.6c — bounded daily analytics rollup. For each installed shop
+ * (RLS-scoped), roll completed days of analytics_event into
+ * analytics_rollup_daily so the long-range event_type/surface reports read a
+ * few thousand rollup rows instead of millions of raw rows. Bounded + self-
+ * converging per shop (see rollupAnalyticsDaily): each run touches at most
+ * REFRESH_DAYS + BACKFILL_DAYS days. Runs on the SAME tick as the retention
+ * passes (no new queue). Returns the number of shops processed.
+ */
+export async function runAnalyticsRollup(
+  rootExec: Exec,
+  runner: <T>(shopId: string, fn: (exec: Exec) => Promise<T>) => Promise<T>,
+  opts: { now?: Date } = {},
+): Promise<number> {
+  const ids = await selectInstalledShops(rootExec);
+  for (const id of ids) await runner(id, (e) => rollupAnalyticsDaily(e, id, opts));
+  return ids.length;
 }
 
 /**

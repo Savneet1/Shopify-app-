@@ -2,7 +2,7 @@ import { authenticate } from "~/shopify.server";
 import { resolveShopId } from "~/lib/tenant.server";
 import { storefrontLimiter } from "./rate-limit";
 import { FilterValidationError } from "./filters";
-import { logger } from "~/lib/logger.server";
+import { logger, maybeLogSlow } from "~/lib/logger.server";
 
 /**
  * Shared App Proxy request handling for the storefront search endpoints
@@ -35,6 +35,8 @@ const JSON_HEADERS = {
   // Proxy responses are per-shop and time-sensitive; let Shopify's proxy layer
   // and browsers cache very briefly at most.
   "Cache-Control": "no-store",
+  // Phase 14.4f: these JSON bodies are never a document; forbid MIME sniffing.
+  "X-Content-Type-Options": "nosniff",
 };
 
 export function jsonResponse(data: unknown, init?: ResponseInit): Response {
@@ -81,7 +83,9 @@ export async function handleProxy(
   const url = new URL(request.url);
 
   try {
+    const t0 = performance.now();
     const data = await handler({ shop, shopId, url });
+    maybeLogSlow(`proxy ${url.pathname}`, performance.now() - t0, shopId); // 14.4i: hashed shop, no SQL/params
     return jsonResponse(data);
   } catch (err) {
     // Malformed filter input -> clean 400 (client error), never a 500.

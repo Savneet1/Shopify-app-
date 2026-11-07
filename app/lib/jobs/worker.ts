@@ -14,7 +14,7 @@ import {
   fetchCollectionNode,
 } from "~/lib/shopify/bulk.server";
 import { enqueueFullSync, enqueueRestockDrain, enqueueRestockConfirm } from "./queue";
-import { runReconciliationTick, runSignalRetention, runAnalyticsPartitionMaintenance, runRestockMaintenance, runRestockConfirmSweep, selectInstalledShops } from "./maintenance";
+import { runReconciliationTick, runSignalRetention, runAnalyticsPartitionMaintenance, runAnalyticsRollup, runRestockMaintenance, runRestockConfirmSweep, selectInstalledShops } from "./maintenance";
 import { runRestockDrainForShop } from "~/lib/restock/drain.server";
 import { runRestockConfirm } from "~/lib/restock/send.server";
 import { prismaRootExec } from "~/lib/db/root-exec.server";
@@ -107,6 +107,9 @@ export async function startWorker(): Promise<PgBoss> {
     // Phase 11: ensure analytics partitions ahead + drop ones past the hard cap
     // (owner definer functions, global/not per-shop).
     const parts = await runAnalyticsPartitionMaintenance(prismaRootExec());
+    // Phase 14.6c: bounded daily rollup of completed days (per shop, RLS) so the
+    // long-range event_type/surface reports read the rollup, not millions of raw.
+    const rolled = await runAnalyticsRollup(prismaRootExec(), withShopExec);
     // Phase 12.7: back-in-stock retention (per shop, bounded batches, RLS).
     const restock = await runRestockMaintenance(prismaRootExec(), withShopExec);
     // Phase 12.2 R5b: re-enqueue any stranded double-opt-in confirmations.
@@ -116,7 +119,7 @@ export async function startWorker(): Promise<PgBoss> {
     const shops = await selectInstalledShops(prismaRootExec());
     for (const id of shops) await enqueueRestockDrain(id).catch(() => {});
     logger.info(
-      { enqueued: n, signalsPurged: purged, partitionsEnsured: parts.ensured.length, partitionsDropped: parts.dropped, restock, confirmSwept },
+      { enqueued: n, signalsPurged: purged, partitionsEnsured: parts.ensured.length, partitionsDropped: parts.dropped, rollupShops: rolled, restock, confirmSwept },
       "reconciliation tick",
     );
   });

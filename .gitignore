@@ -10,3 +10,6 @@ node_modules
 .DS_Store
 /prisma/*.db
 /coverage
+
+# Phase 14 benchmark output (generated; numbers are committed in docs/PHASE14_BENCH.md)
+scripts/bench/out/

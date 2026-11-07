@@ -1,6 +1,6 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { handleProxy } from "~/lib/search/proxy.server";
-import { withShopExec } from "~/lib/tenant.server";
+import { withShopExecTimed as withShopExec } from "~/lib/tenant.server";
 import { enqueueRestockConfirm } from "~/lib/jobs/queue";
 import { runSubscribeRequest } from "~/lib/restock/subscribe-request.server";
 

@@ -187,6 +187,15 @@ jobs:
           if [ "$fail" -ne 0 ]; then exit 1; fi
           echo "OK: worker booted, processed a job, and shut down." | tee -a run.log
 
+      - name: Dependency audit (informational — non-blocking) [Phase 14.5]
+        if: always()
+        continue-on-error: true
+        run: |
+          echo "===== npm audit --omit=dev (production deps; informational) =====" | tee -a run.log
+          # Never fails the build: a transitive advisory must not block a deploy.
+          # The exploitability assessment + fix plan live in docs/PHASE14_SECURITY.md.
+          npm audit --omit=dev 2>&1 | tee -a run.log || true
+
       - name: Print full run.log
         if: always()
         run: |

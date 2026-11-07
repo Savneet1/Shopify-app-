@@ -2,10 +2,17 @@
 
 A production-grade, multi-tenant Shopify **Search, Filter & Discovery** app built
 on the current official **Shopify React Router** template, with PostgreSQL as the
-only data/search engine. This repository is at **Phase 13b (localization & markets
-fix batch on top of Phase 13: combined-listing aggregate now counts only visible
-children and refreshes the parent on any child change; price hydration money-scale
-guard; legacy-doc backfill; interest re-order never throws)**.
+only data/search engine. This repository is at **Phase 14 (performance
+measurement, optimization & security hardening on top of Phase 13b)**: a
+repeatable benchmark harness (`npm run bench`), two measured, byte-identical
+optimizations (migrations 0020 planner-stat freshness + 0021 gid-lookup index),
+security hardening (per-path `statement_timeout`, authorization/RLS/egress audits,
+security headers, error hygiene, log redaction, `/healthz`), semver dependency
+overrides, and a bounded analytics daily rollup for long-range reports — all with
+tests. **806 passed | 13 skipped** (`npm test` == `test:ci-parity`). All latency
+numbers are sandbox-indicative (single shared node); hosted figures via the manual
+`benchmark.yml` workflow are Requires-Verification, and no F14 target is claimed as
+met — see `docs/PHASE14.md`.
 
 > Phase gating is enforced. Implemented so far: Phase 1 (foundation: auth,
 > embedded shell, multi-tenancy + RLS, privacy webhooks, billing), Phase 2/2.1

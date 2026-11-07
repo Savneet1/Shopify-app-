@@ -1,6 +1,6 @@
 import type { LoaderFunctionArgs } from "react-router";
 import { handleProxy } from "~/lib/search/proxy.server";
-import { withShopExec } from "~/lib/tenant.server";
+import { withShopExecTimed as withShopExec } from "~/lib/tenant.server";
 import { classifyRef } from "~/lib/recommend/refs";
 import { isUuid } from "~/lib/merch/assign";
 import { listVisibleBundles, resolveBundleForStorefront } from "~/lib/bundles/engine";
