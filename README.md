@@ -2,17 +2,22 @@
 
 A production-grade, multi-tenant Shopify **Search, Filter & Discovery** app built
 on the current official **Shopify React Router** template, with PostgreSQL as the
-only data/search engine. This repository is at **Phase 14 (performance
-measurement, optimization & security hardening on top of Phase 13b)**: a
-repeatable benchmark harness (`npm run bench`), two measured, byte-identical
-optimizations (migrations 0020 planner-stat freshness + 0021 gid-lookup index),
-security hardening (per-path `statement_timeout`, authorization/RLS/egress audits,
-security headers, error hygiene, log redaction, `/healthz`), semver dependency
-overrides, and a bounded analytics daily rollup for long-range reports — all with
-tests. **806 passed | 13 skipped** (`npm test` == `test:ci-parity`). All latency
-numbers are sandbox-indicative (single shared node); hosted figures via the manual
-`benchmark.yml` workflow are Requires-Verification, and no F14 target is claimed as
-met — see `docs/PHASE14.md`.
+only data/search engine. This repository is at **Phase 14b (de-scanning the
+measured search hotspots, on top of Phase 14's measurement & hardening)**. Phase
+14 added a benchmark harness (`npm run bench`), stats/gid migrations (0020/0021),
+security hardening and a bounded analytics rollup. Phase 14b replaces the
+per-request full-catalog scans with per-version precomputed tables (migrations
+0022 facet values/summary, 0024 suggestion terms) and index-union recommendation
+candidates (0023): predictive skips facets; suggestions, NL parse-context and
+unfiltered-browse facet counts read small indexed tables; recommendation
+candidates come from index lookups. All byte-identical (precompute gated to the
+no-hide/show_all case with a live fallback), proven by equivalence tests, with 2
+guards mutation-tested. Indicative sandbox before→after: predictive p95
+**183→37 ms @10k / 1500→190 ms @100k**, unfiltered browse facets **909→237 ms
+@100k**, rec_similar **2273→1265 ms @100k**; at 10k all three F14 targets now
+PASS, at 100k they still miss on shared CPU (reported, not tuned). Hosted figures
+via the manual `benchmark.yml` workflow are Requires-Verification — see
+`docs/PHASE14B_REPORT.md`.
 
 > Phase gating is enforced. Implemented so far: Phase 1 (foundation: auth,
 > embedded shell, multi-tenancy + RLS, privacy webhooks, billing), Phase 2/2.1

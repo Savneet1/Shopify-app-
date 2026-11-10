@@ -2,6 +2,7 @@ import type { Exec } from "~/lib/db/executor";
 import { Params, type SearchFilters } from "./filters";
 import { buildWhere, type PlannedMatch } from "./match";
 import { FACET_METAFIELD, FACET_METAFIELD_MAPKEY } from "./config";
+import { precomputedFacets } from "./facetcache";
 
 /**
  * Phase 4.2 facet counting, Phase 5-aware. Each facet is a separate GROUP BY
@@ -20,6 +21,26 @@ export interface FacetsResult {
 }
 
 const FACET_OPTION_LIMIT = 50;
+
+/**
+ * Phase 14b P4: the precomputed per-version facet counts are served ONLY for the
+ * landing/browse case — NO query text, NO filters, NO merchandising hide rules,
+ * and combined mode show_all (no combined hide). In that case the visible set is
+ * exactly "all visible docs of the version", which the precompute captures
+ * exactly; otherwise the set depends on the per-request match/hide/collection
+ * predicates, so we fall back to the live aggregates (already fast with filters).
+ */
+export function canUsePrecomputedFacets(filters: SearchFilters, m: PlannedMatch): boolean {
+  if (m.level !== "browse") return false;                        // has query text
+  if (m.combinedHide) return false;                              // combined mode != show_all
+  if (m.merch && m.merch.hideIds.length > 0) return false;       // merch hide rules present
+  return (
+    filters.vendor.length === 0 && filters.productType.length === 0 &&
+    filters.tags.length === 0 && filters.metafield.length === 0 &&
+    filters.priceMin == null && filters.priceMax == null &&
+    filters.available == null && filters.collectionId == null
+  );
+}
 
 async function columnFacet(
   exec: Exec, shopId: string, versionId: string, filters: SearchFilters, m: PlannedMatch,
@@ -102,6 +123,10 @@ async function priceRange(
 export async function computeFacetsWithExec(
   exec: Exec, shopId: string, versionId: string, filters: SearchFilters, m: PlannedMatch,
 ): Promise<FacetsResult> {
+  // P4: landing/browse with no filters/hide → serve from the precomputed counts.
+  if (canUsePrecomputedFacets(filters, m)) {
+    return precomputedFacets(exec, shopId, versionId);
+  }
   // Sequential (one tenant Exec == one client; no concurrent queries).
   const vendor = await columnFacet(exec, shopId, versionId, filters, m, "vendor", "vendor");
   const productType = await columnFacet(exec, shopId, versionId, filters, m, "productType", "product_type");

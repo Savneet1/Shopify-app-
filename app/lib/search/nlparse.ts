@@ -2,7 +2,7 @@ import type { Exec } from "~/lib/db/executor";
 import { getActiveVersion } from "~/lib/index/engine";
 import { tokenize } from "./text";
 import { getEffectiveAttributes, type AttrMapping } from "./attributes";
-import { FACET_METAFIELD_MAPKEY } from "./config";
+import { precomputedParseValues } from "./facetcache";
 import type { RawFilters } from "./filters";
 import type { SortOption } from "./query";
 
@@ -175,43 +175,16 @@ function extractPrice(s: string, recognized: (word: string) => boolean): { hit: 
   );
 }
 
-/** Build the per-shop parse context (attributes + live vendor/type values). */
+/** Build the per-shop parse context (attributes + live vendor/type values).
+ *
+ * Phase 14b P3: the distinct VISIBLE vendor/type/tag/metafield values come from
+ * the precomputed per-version search_facet_value table (rebuilt with the docs),
+ * replacing four O(catalog) DISTINCT scans per request. The precompute is built
+ * from the SAME visibility predicate (published + ACTIVE), so the value sets are
+ * identical to the former live DISTINCT queries (proven by test). */
 export async function buildParseContext(exec: Exec, shopId: string, versionId: string): Promise<ParseContext> {
   const attributes = await getEffectiveAttributes(exec, shopId);
-  const vendors = (
-    await exec.rows<{ v: string }>(
-      `SELECT DISTINCT vendor AS v FROM product_search_doc
-       WHERE shop_id=$1::uuid AND index_version_id=$2::uuid AND published=true AND status='ACTIVE'
-         AND vendor IS NOT NULL AND vendor <> ''`,
-      [shopId, versionId],
-    )
-  ).map((r) => r.v);
-  const productTypes = (
-    await exec.rows<{ v: string }>(
-      `SELECT DISTINCT product_type AS v FROM product_search_doc
-       WHERE shop_id=$1::uuid AND index_version_id=$2::uuid AND published=true AND status='ACTIVE'
-         AND product_type IS NOT NULL AND product_type <> ''`,
-      [shopId, versionId],
-    )
-  ).map((r) => r.v);
-  // A2: live, VISIBLE tag + configured-metafield values (same visibility as
-  // vendor/product_type above), so attribute phrases resolve case-insensitively
-  // to the actual live casing and never leak a draft-only value.
-  const tagValues = (
-    await exec.rows<{ v: string }>(
-      `SELECT DISTINCT unnest(tags) AS v FROM product_search_doc
-       WHERE shop_id=$1::uuid AND index_version_id=$2::uuid AND published=true AND status='ACTIVE'`,
-      [shopId, versionId],
-    )
-  ).map((r) => r.v).filter((v) => v != null && v !== "");
-  const metafieldValues = (
-    await exec.rows<{ v: string }>(
-      `SELECT DISTINCT metafields->>$3 AS v FROM product_search_doc
-       WHERE shop_id=$1::uuid AND index_version_id=$2::uuid AND published=true AND status='ACTIVE'
-         AND metafields->>$3 IS NOT NULL AND metafields->>$3 <> ''`,
-      [shopId, versionId, FACET_METAFIELD_MAPKEY],
-    )
-  ).map((r) => r.v);
+  const { vendors, productTypes, tagValues, metafieldValues } = await precomputedParseValues(exec, shopId, versionId);
   return {
     attributes,
     vendors,

@@ -300,6 +300,42 @@ export async function recommendContent(
       WHERE shop_id = ${sid}::uuid AND index_version_id = ${vid}::uuid
         AND published = true AND status = 'ACTIVE' AND ${seedMatch}
     ),
+    -- Phase 14b P5: aggregate the seed attributes so candidate generation can be
+    -- driven by INDEX lookups instead of scanning every visible doc.
+    seed_agg AS (
+      SELECT
+        array_agg(DISTINCT seed_type)   FILTER (WHERE seed_type   IS NOT NULL) AS a_types,
+        array_agg(DISTINCT seed_vendor) FILTER (WHERE seed_vendor IS NOT NULL) AS a_vendors,
+        COALESCE((SELECT array_agg(DISTINCT lt) FROM seeds s2, unnest(immutable_lower_text_array(s2.seed_tags)) lt), '{}'::text[]) AS a_tags_lower,
+        COALESCE((SELECT array_agg(DISTINCT ct) FROM seeds s3, unnest(s3.seed_cols) ct), '{}'::text[]) AS a_cols
+      FROM seeds
+    ),
+    -- Candidate IDs = UNION of index lookups, one branch per qualification rule.
+    -- This is EXACTLY the qualifier set (same conditions the WHERE-qualify filter
+    -- below re-checks): same product_type / vendor / case-insensitive tag overlap
+    -- / shared collection TITLE / title trigram (sim >= 0.3 via the % operator at
+    -- the default threshold). The % and lower() comparisons use the trigram and
+    -- lowered-tags GIN indexes; type/vendor/collection use their btree/join.
+    cand_ids AS (
+      SELECT d.product_id FROM product_search_doc d, seed_agg a
+        WHERE d.shop_id=${sid}::uuid AND d.index_version_id=${vid}::uuid AND d.published=true AND d.status='ACTIVE'
+          AND d.product_type = ANY(a.a_types)
+      UNION
+      SELECT d.product_id FROM product_search_doc d, seed_agg a
+        WHERE d.shop_id=${sid}::uuid AND d.index_version_id=${vid}::uuid AND d.published=true AND d.status='ACTIVE'
+          AND d.vendor = ANY(a.a_vendors)
+      UNION
+      SELECT d.product_id FROM product_search_doc d, seed_agg a
+        WHERE d.shop_id=${sid}::uuid AND d.index_version_id=${vid}::uuid AND d.published=true AND d.status='ACTIVE'
+          AND immutable_lower_text_array(d.tags) && a.a_tags_lower
+      UNION
+      SELECT d.product_id FROM product_search_doc d JOIN seeds s ON d.title % s.seed_title
+        WHERE d.shop_id=${sid}::uuid AND d.index_version_id=${vid}::uuid AND d.published=true AND d.status='ACTIVE'
+      UNION
+      SELECT pc.product_id FROM product_collection pc
+        JOIN collection col ON col.id = pc.collection_id AND col.deleted_at IS NULL, seed_agg a
+        WHERE col.title = ANY(a.a_cols)
+    ),
     cand AS (
       SELECT d.product_id,
              d.shopify_product_gid AS gid,
@@ -312,6 +348,7 @@ export async function recommendContent(
              ARRAY(SELECT jsonb_array_elements_text(d.doc->'collections')) AS cols
       FROM product_search_doc d
       WHERE ${candParts.join(" AND ")}
+        AND d.product_id IN (SELECT product_id FROM cand_ids)
     ),
     scored AS (
       SELECT c.product_id, c.gid, c.doc, c.title, c.vendor,

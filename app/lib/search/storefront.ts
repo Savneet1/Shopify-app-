@@ -48,6 +48,14 @@ export interface StorefrontParams extends SearchParams {
   ignore?: InterpretKind[];
   /** Phase 8: anonymous A/B visitor token (first-party storage only; no PII). */
   visitorToken?: string | null;
+  /**
+   * Phase 14b P1: compute facet aggregates. Default true (byte-identical). A
+   * products-only caller (e.g. predictive, which already uses searchWithExec and
+   * never needs the facet sidebar) can pass false to skip the 5 facet GROUP BY
+   * aggregates + price-range scan entirely; products/total/order/strategy are
+   * unchanged, and `facets`/`priceRange` come back empty.
+   */
+  facets?: boolean;
 }
 
 export interface InterpretedAs {
@@ -136,7 +144,7 @@ function correctedQueryString(keptTokens: string[], corrections: Correction[]): 
 async function runCore(
   exec: Exec, shopId: string, active: IndexVersionRow, q: string, filters: SearchFilters,
   sort: SortOption, limit: number, offset: number, merch: MerchPlan,
-  combinedHide?: "child" | "parent", locale: string | null = null,
+  combinedHide?: "child" | "parent", locale: string | null = null, withFacets = true,
 ): Promise<CoreResult> {
   const plan = await buildPlan(exec, shopId, active.id, q, locale);
   const planned = await resolvePlanned(exec, shopId, active.id, plan, filters, merch, combinedHide);
@@ -146,7 +154,10 @@ async function runCore(
     return { products: [], total: 0, strategy: "none", facets: [], priceRange: null, corrected: false, corrections, correctedQuery };
   }
   const { rows } = await runProducts(exec, shopId, active.id, planned, filters, limit, offset, sort);
-  const facetsResult = await computeFacetsWithExec(exec, shopId, active.id, filters, planned);
+  // P1: a products-only caller skips the facet aggregates + price-range scan.
+  const facetsResult = withFacets
+    ? await computeFacetsWithExec(exec, shopId, active.id, filters, planned)
+    : { facets: [] as Facet[], priceRange: null };
   const total = rows[0]?.total ?? 0;
   return {
     products: rows.map(mapRow), total, strategy: strategyOf(planned, rows[0]?.cls, total),
@@ -245,7 +256,8 @@ export async function storefrontSearchWithExec(
   }
 
   // Effective (parsed) search.
-  let core = await runCore(exec, shopId, active, effectiveQ, effectiveFilters, effectiveSort, limit, offset, merch, combinedHide, resolvedLocale);
+  const withFacets = params.facets !== false;
+  let core = await runCore(exec, shopId, active, effectiveQ, effectiveFilters, effectiveSort, limit, offset, merch, combinedHide, resolvedLocale, withFacets);
   let appliedFilters = effectiveFilters;
   let usedSort = effectiveSort;
   let usedQuery = effectiveQ;
@@ -253,7 +265,7 @@ export async function storefrontSearchWithExec(
   // Never worse than Phase 5: if parsing produced zero results but plain search
   // would not, fall back to plain search.
   if (interpretedAs.applied && core.total === 0) {
-    const plain = await runCore(exec, shopId, active, q, explicitFilters, explicitSort ?? "relevance", limit, offset, merch, combinedHide, resolvedLocale);
+    const plain = await runCore(exec, shopId, active, q, explicitFilters, explicitSort ?? "relevance", limit, offset, merch, combinedHide, resolvedLocale, withFacets);
     if (plain.total > 0) {
       core = plain;
       appliedFilters = explicitFilters;

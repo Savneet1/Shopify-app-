@@ -61,11 +61,22 @@ export async function catalogSuggestionsWithExec(
   // prefix wildcard. ESCAPE '\' makes the escaping explicit.
   const like = `${q.replace(/([%_\\])/g, "\\$1")}%`;
 
-  // Titles + vendor + productType come straight off the doc; collection titles
-  // are unnested from the doc's collections array. All restricted to visible
-  // (published + ACTIVE) docs in the active version.
-  const rows = await exec.rows<RawSuggestion>(
-    `
+  // Phase 14b P2: when there is NO per-request product-level exclusion (no merch
+  // hide ids AND combined mode show_all), prefix-match the small precomputed
+  // per-version suggestion-term table (trigram-indexed) instead of scanning
+  // every visible doc. The precompute is built from the SAME visible docs with
+  // the SAME term extraction, so the result is byte-identical; the else branch
+  // keeps the live per-doc scan, which can apply the dynamic exclusions.
+  const canPrecompute = hideIds.length === 0 && !opts?.combinedHide;
+  const rows = canPrecompute
+    ? await exec.rows<RawSuggestion>(
+        `SELECT text, type FROM search_suggest_term
+         WHERE shop_id=$1::uuid AND index_version_id=$2::uuid
+           AND text <> '' AND immutable_unaccent(lower(text)) LIKE immutable_unaccent(lower($3)) ESCAPE '\\'`,
+        [shopId, active.id, like],
+      )
+    : await exec.rows<RawSuggestion>(
+        `
     WITH visible AS (
       SELECT doc, title FROM product_search_doc
       WHERE shop_id=$1::uuid AND index_version_id=$2::uuid
@@ -87,8 +98,8 @@ export async function catalogSuggestionsWithExec(
     WHERE text <> '' AND immutable_unaccent(lower(text)) LIKE immutable_unaccent(lower($3)) ESCAPE '\\'
     GROUP BY text, type
     `,
-    [shopId, active.id, like, hideIds],
-  );
+        [shopId, active.id, like, hideIds],
+      );
 
   // Deduplicate by lowercased text (keep the best-weighted field), then sort by
   // field weight, then shortest, then alphabetical — fully deterministic.

@@ -1,5 +1,6 @@
 import type { Exec } from "~/lib/db/executor";
 import { distanceWithin } from "./damerau";
+import { rebuildFacetPrecompute, rebuildSuggestTerms } from "./facetcache";
 
 /**
  * Per-shop, per-index-version vocabulary (surface term + document frequency),
@@ -49,6 +50,12 @@ export async function rebuildVocabulary(
      GROUP BY term`,
     [shopId, indexVersionId],
   );
+  // Phase 14b P3/P4: rebuild the per-version precomputed facet values + summary
+  // from the SAME visible docs, so the NL parse-context and unfiltered-browse
+  // facet counts stay correct after every doc-writing path (this function is the
+  // single choke point all of them call).
+  await rebuildFacetPrecompute(exec, shopId, indexVersionId);
+  await rebuildSuggestTerms(exec, shopId, indexVersionId);
   const rows = await exec.rows<{ n: number }>(
     `SELECT count(*)::int AS n FROM search_vocabulary WHERE shop_id=$1::uuid AND index_version_id=$2::uuid`,
     [shopId, indexVersionId],
