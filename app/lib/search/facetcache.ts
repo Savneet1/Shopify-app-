@@ -66,23 +66,26 @@ export async function rebuildFacetPrecompute(exec: Exec, shopId: string, version
  */
 export async function rebuildSuggestTerms(exec: Exec, shopId: string, versionId: string): Promise<void> {
   await exec.run(`DELETE FROM search_suggest_term WHERE shop_id=$1::uuid AND index_version_id=$2::uuid`, [shopId, versionId]);
+  // Phase 14c: doc_count = number of visible docs contributing each (type,text),
+  // so the term can be delta-maintained (+/-1, delete at 0). Reads ignore it, so
+  // suggestions stay byte-identical. '' is filtered inline (was a post-DELETE).
   await exec.run(
-    `INSERT INTO search_suggest_term (shop_id, index_version_id, type, text)
-       SELECT DISTINCT $1::uuid,$2::uuid,'title', title FROM product_search_doc
-         WHERE ${VISIBLE} AND title IS NOT NULL AND title <> ''
-       UNION
-       SELECT DISTINCT $1::uuid,$2::uuid,'vendor', doc->>'vendor' FROM product_search_doc
-         WHERE ${VISIBLE} AND doc->>'vendor' IS NOT NULL AND doc->>'vendor' <> ''
-       UNION
-       SELECT DISTINCT $1::uuid,$2::uuid,'productType', doc->>'productType' FROM product_search_doc
-         WHERE ${VISIBLE} AND doc->>'productType' IS NOT NULL AND doc->>'productType' <> ''
-       UNION
-       SELECT DISTINCT $1::uuid,$2::uuid,'collection', jsonb_array_elements_text(doc->'collections') FROM product_search_doc
-         WHERE ${VISIBLE} AND jsonb_typeof(doc->'collections') = 'array'`,
+    `INSERT INTO search_suggest_term (shop_id, index_version_id, type, text, doc_count)
+       SELECT $1::uuid,$2::uuid,'title', title, count(*)::int FROM product_search_doc
+         WHERE ${VISIBLE} AND title IS NOT NULL AND title <> '' GROUP BY title
+       UNION ALL
+       SELECT $1::uuid,$2::uuid,'vendor', doc->>'vendor', count(*)::int FROM product_search_doc
+         WHERE ${VISIBLE} AND doc->>'vendor' IS NOT NULL AND doc->>'vendor' <> '' GROUP BY doc->>'vendor'
+       UNION ALL
+       SELECT $1::uuid,$2::uuid,'productType', doc->>'productType', count(*)::int FROM product_search_doc
+         WHERE ${VISIBLE} AND doc->>'productType' IS NOT NULL AND doc->>'productType' <> '' GROUP BY doc->>'productType'
+       UNION ALL
+       SELECT $1::uuid,$2::uuid,'collection', ct, count(*)::int
+         FROM product_search_doc psd, jsonb_array_elements_text(psd.doc->'collections') AS ct
+         WHERE psd.shop_id=$1::uuid AND psd.index_version_id=$2::uuid AND psd.published=true AND psd.status='ACTIVE'
+           AND jsonb_typeof(psd.doc->'collections') = 'array' AND ct IS NOT NULL AND ct <> '' GROUP BY ct`,
     [shopId, versionId],
   );
-  // The collection UNION may yield '' — remove to match the live text <> '' filter.
-  await exec.run(`DELETE FROM search_suggest_term WHERE shop_id=$1::uuid AND index_version_id=$2::uuid AND text=''`, [shopId, versionId]);
 }
 
 /** P3: distinct visible facet values per kind for the NL parse context. */
@@ -144,13 +147,26 @@ export async function precomputedFacets(exec: Exec, shopId: string, versionId: s
     { key: FACET_METAFIELD.key, label: FACET_METAFIELD.label, options: metafield },
   ].filter((f) => f.options.length > 0);
 
-  const sum = await exec.rows<{ min: string | null; max: string | null }>(
-    `SELECT price_min AS min, price_max AS max FROM search_facet_summary
+  // Price range: delta-maintained when clean; when a write may have dropped an
+  // extreme we fall back to the live min/max (always exact) until reconcile
+  // recomputes and clears price_dirty. This keeps the READ byte-identical.
+  const sum = await exec.rows<{ min: string | null; max: string | null; dirty: boolean }>(
+    `SELECT price_min AS min, price_max AS max, price_dirty AS dirty FROM search_facet_summary
      WHERE shop_id=$1::uuid AND index_version_id=$2::uuid`,
     [shopId, versionId],
   );
   const r = sum[0];
-  const priceRange = r && r.min != null && r.max != null ? { min: String(r.min), max: String(r.max) } : null;
+  let priceRange: { min: string; max: string } | null = null;
+  if (r && r.dirty) {
+    const live = await exec.rows<{ min: string | null; max: string | null }>(
+      `SELECT min(price_min) AS min, max(price_max) AS max FROM product_search_doc WHERE ${VISIBLE}`,
+      [shopId, versionId],
+    );
+    const l = live[0];
+    priceRange = l && l.min != null && l.max != null ? { min: String(l.min), max: String(l.max) } : null;
+  } else if (r && r.min != null && r.max != null) {
+    priceRange = { min: String(r.min), max: String(r.max) };
+  }
 
   return { facets, priceRange };
 }

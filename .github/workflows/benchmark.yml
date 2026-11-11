@@ -18,6 +18,10 @@ on:
         description: "Iterations per query case"
         default: "200"
         required: false
+      burst:
+        description: "Phase 14c write_burst size (product updates through the real apply path)"
+        default: "2000"
+        required: false
 
 jobs:
   benchmark:
@@ -79,7 +83,7 @@ jobs:
           IFS=',' read -ra SIZES <<< "${{ github.event.inputs.sizes }}"
           for s in "${SIZES[@]}"; do
             echo "===== benchmark size=$s ====="
-            npm run bench -- --size="$s" --n="${{ github.event.inputs.n }}" | tee -a "bench-$s.log"
+            npm run bench -- --size="$s" --n="${{ github.event.inputs.n }}" --burst-n="${{ github.event.inputs.burst }}" | tee -a "bench-$s.log"
           done
 
       - name: Upload benchmark artifacts

@@ -6,7 +6,9 @@
  */
 import pg from "pg";
 import type { Exec } from "~/lib/db/executor";
-import { runFullSync } from "~/lib/sync/orchestrator";
+import { runFullSync, applyProductUpsert } from "~/lib/sync/orchestrator";
+import { rebuildVocabulary } from "~/lib/search/vocabulary";
+import { getActiveVersion } from "~/lib/index/engine";
 import { storefrontSearchWithExec } from "~/lib/search/storefront";
 import { predictiveWithExec } from "~/lib/search/predictive";
 import { getRecommendations } from "~/lib/recommend/engine";
@@ -178,6 +180,76 @@ export class Bench {
       { name: "rec_related", op: (e) => getRecommendations(e, this.shopId, { type: "related", seed: seed(), limit: 8 }) },
       { name: "rec_trending", op: (e) => getRecommendations(e, this.shopId, { type: "trending", limit: 8 }) },
     ];
+  }
+
+  // ---- Phase 14c W3: WRITE-path cases (real webhook-apply path) ----
+  /** A sample of existing product GIDs to update. */
+  async sampleGids(k: number): Promise<string[]> {
+    const rows = await this.withShop((e) => e.rows<{ g: string }>(
+      `SELECT shopify_product_gid g FROM product WHERE shop_id=$1::uuid AND deleted_at IS NULL ORDER BY random() LIMIT $2`,
+      [this.shopId, k]));
+    return rows.map((r) => r.g);
+  }
+
+  /** Build a realistic single-product update (changes price/availability/tags/
+   * vendor/type/title) for an existing gid. */
+  private buildUpdate(gid: string, i: number): unknown {
+    const s = this.gen.samples;
+    const pick = <T,>(a: T[]) => a[Math.floor(Math.random() * a.length)];
+    const n = gid.split("/").pop();
+    return {
+      product: {
+        shopifyProductGid: gid, title: `${pick(s.terms)} ${n} r${i}`, handle: `h${n}`,
+        vendor: pick(s.vendors), productType: pick(s.types), status: "ACTIVE",
+        tags: [pick(s.terms), pick(s.terms)], onlineStoreUrl: `https://x.test/${n}`,
+        featuredImageUrl: "https://img/x.jpg", featuredImageAlt: "x",
+        metafields: { "custom.material": pick(["Leather", "Rubber", "Canvas"]) },
+        combinedRole: null, combinedParentGid: null,
+      },
+      variants: [{ shopifyVariantGid: `${gid}/v1`, sku: `S${n}`, price: String(5 + Math.floor(Math.random() * 95)), availableForSale: Math.random() > 0.25, position: 1 }],
+      collectionGids: [], variantsComplete: true, collectionsComplete: true,
+    };
+  }
+
+  /** Apply `count` single-product updates through applyProductUpsert (one tenant
+   * transaction each — the real webhook path). Reports per-update wall + stmts
+   * and the total drain time. */
+  async runWriteCase(name: string, count: number): Promise<CaseResult & { totalMs: number }> {
+    const gids = await this.sampleGids(Math.min(count, 2000));
+    if (gids.length === 0) throw new Error("no products to update");
+    // Each update is its own tenant transaction (the real webhook path): a
+    // ShopRunner bound to that transaction's exec.
+    const apply = (gid: string, i: number) => this.withShop(async (e, stmtCount) => {
+      const runner1 = <T,>(_sid: string, fn: (ee: Exec) => Promise<T>) => fn(e);
+      await applyProductUpsert(runner1 as never, this.shopId, this.buildUpdate(gid, i) as never);
+      return stmtCount();
+    });
+    // warm-up
+    for (let i = 0; i < Math.min(5, count); i++) await apply(gids[i % gids.length], -1 - i);
+    const wall: number[] = []; const stmts: number[] = [];
+    const t0 = performance.now();
+    for (let i = 0; i < count; i++) {
+      const t = performance.now();
+      const s = await apply(gids[i % gids.length], i);
+      wall.push(performance.now() - t); stmts.push(s);
+    }
+    const totalMs = performance.now() - t0;
+    return { name, concurrency: 1, wall: summarize(wall), stmts: summarize(stmts), totalMs };
+  }
+
+  /** The 14b per-update structure-maintenance cost: one full rebuildVocabulary
+   * (which also rebuilds the facet/suggest/summary precompute) over the whole
+   * visible catalog. This is what every product write paid on 17ec787; 14c's
+   * delta replaces it. Measured in the same node for an honest before/after. */
+  async baselineRebuild(count: number): Promise<Summary> {
+    const verId = await this.withShop(async (e) => (await getActiveVersion(e, this.shopId))!.id);
+    const t: number[] = [];
+    for (let i = 0; i < count; i++) {
+      const t0 = performance.now();
+      await this.withShop((e) => rebuildVocabulary(e, this.shopId, verId));
+      t.push(performance.now() - t0);
+    }
+    return summarize(t);
   }
 
   async close(): Promise<void> { await this.p.runtime.end(); await this.p.owner.end(); }

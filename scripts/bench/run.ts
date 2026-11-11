@@ -68,6 +68,22 @@ async function main() {
   await bench.setCombinedMode("show_all");
   results.push(combined);
 
+  // Phase 14c W3: WRITE-path cases through the real applyProductUpsert path.
+  const writeN = parseInt(arg("write-n", quick ? "100" : "300")!, 10);
+  const burstN = parseInt(arg("burst-n", quick ? "500" : "2000")!, 10);
+  const wUpdate = await bench.runWriteCase("write_update", writeN);
+  const wBurst = await bench.runWriteCase("write_burst", burstN);
+  // BEFORE baseline (17ec787): the full-rebuild structure cost each update paid.
+  const baselineN = parseInt(arg("baseline-n", "5")!, 10);
+  const baseline = await bench.baselineRebuild(Math.min(baselineN, writeN));
+  results.push({ name: wUpdate.name, concurrency: 1, wall: wUpdate.wall, stmts: wUpdate.stmts });
+  results.push({ name: wBurst.name, concurrency: 1, wall: wBurst.wall, stmts: wBurst.stmts });
+  const write = {
+    update: { p50: round(wUpdate.wall.p50), p95: round(wUpdate.wall.p95), max: round(wUpdate.wall.max), stmts: round(wUpdate.stmts.p50), n: writeN },
+    burst: { count: burstN, drainMs: round(wBurst.totalMs), perUpdateP50: round(wBurst.wall.p50), perUpdateP95: round(wBurst.wall.p95), perUpdateMax: round(wBurst.wall.max), stmts: round(wBurst.stmts.p50) },
+    baselineFullRebuild: { p50: round(baseline.p50), p95: round(baseline.p95), max: round(baseline.max) },
+  };
+
   const info = await pgInfo();
   const byName = (n: string, conc = concurrencies[0]) => results.find((r) => r.name === n && r.concurrency === conc);
   const predictive = byName("predictive");
@@ -84,12 +100,15 @@ async function main() {
     const delta = typo.wall.p95 - searchNf.wall.p95;
     checks.push({ target: "typo overhead p95", measured: round(delta), limit: 30, unit: "ms", pass: delta <= 30 });
   }
+  // Phase 14c W3 target: per-update p50 <= 100 ms @10k (growth 10k->100k checked across runs).
+  checks.push({ target: `write_update p50 (@${size})`, measured: round(wUpdate.wall.p50), limit: 100, unit: "ms", pass: wUpdate.wall.p50 <= 100 });
 
   const payload = {
     startedAt: started.toISOString(), size, seed, N, concurrencies,
     machine: { cores: os.cpus().length, ram_gb: round(os.totalmem() / 1e9), platform: process.platform, node: process.version },
     postgres: info,
     build: { ms: round(load.buildMs), docCount: load.docCount, rssDeltaMb: load.rssDeltaMb, stats: load.gen.stats },
+    write,
     results, checks, topStmts: topStmts.map((t) => ({ sql: t.sql.slice(0, 200), maxMs: round(t.maxMs), count: t.count })),
   };
   const outDir = join(process.cwd(), "scripts", "bench", "out");

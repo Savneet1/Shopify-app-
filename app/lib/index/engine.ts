@@ -1,6 +1,7 @@
 import type { Exec } from "~/lib/db/executor";
 import { weightedTsvSql } from "~/lib/search/config";
 import { rebuildVocabulary } from "~/lib/search/vocabulary";
+import { subtractContributions, addContributions, finalizeDelta } from "./indexdelta";
 
 /**
  * Versioned search index engine.
@@ -426,18 +427,23 @@ export async function refreshDocInActiveVersion(
     [shopId, productId],
   );
   if (!live[0]) {
+    // Phase 14c: subtract the removed doc's OLD contributions, delete it, finalize.
+    await subtractContributions(exec, shopId, active.id, [productId]);
     await exec.run(
       `DELETE FROM product_search_doc WHERE shop_id=$1::uuid AND index_version_id=$2::uuid AND product_id=$3::uuid`,
       [shopId, active.id, productId],
     );
-    await rebuildVocabulary(exec, shopId, active.id);
+    await finalizeDelta(exec, shopId, active.id);
     return "removed";
   }
+  // Phase 14c: delta — subtract old contributions, overwrite the doc, add new.
+  await subtractContributions(exec, shopId, active.id, [productId]);
   await exec.run(
     docInsertSql(`p.shop_id=$1::uuid AND p.id=$3::uuid AND p.deleted_at IS NULL`),
     [shopId, active.id, productId],
   );
-  await rebuildVocabulary(exec, shopId, active.id);
+  await addContributions(exec, shopId, active.id, [productId]);
+  await finalizeDelta(exec, shopId, active.id);
   return "upserted";
 }
 
@@ -454,6 +460,12 @@ export async function refreshDocsForProducts(
   if (productIds.length === 0) return 0;
   const active = await getActiveVersion(exec, shopId);
   if (!active) return 0;
+  // Phase 14c: set-based delta — subtract the batch's OLD contributions first,
+  // then overwrite docs (and drop deleted ones), then add NEW contributions.
+  // One statement per structure, not per product. The combined-parent refresh
+  // changes only the parent doc's JSON aggregate (not its facet/search columns),
+  // so it needs no structure delta.
+  await subtractContributions(exec, shopId, active.id, productIds);
   await exec.run(
     docInsertSql(`p.shop_id=$1::uuid AND p.deleted_at IS NULL AND p.id = ANY($3::uuid[])`),
     [shopId, active.id, productIds],
@@ -473,7 +485,8 @@ export async function refreshDocsForProducts(
     [shopId, productIds],
   );
   if (parents.length > 0) await refreshCombinedParentDocs(exec, shopId, parents.map((r) => r.gid));
-  await rebuildVocabulary(exec, shopId, active.id);
+  await addContributions(exec, shopId, active.id, productIds);
+  await finalizeDelta(exec, shopId, active.id);
   return productIds.length;
 }
 

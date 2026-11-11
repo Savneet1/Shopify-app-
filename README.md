@@ -2,22 +2,22 @@
 
 A production-grade, multi-tenant Shopify **Search, Filter & Discovery** app built
 on the current official **Shopify React Router** template, with PostgreSQL as the
-only data/search engine. This repository is at **Phase 14b (de-scanning the
-measured search hotspots, on top of Phase 14's measurement & hardening)**. Phase
-14 added a benchmark harness (`npm run bench`), stats/gid migrations (0020/0021),
-security hardening and a bounded analytics rollup. Phase 14b replaces the
-per-request full-catalog scans with per-version precomputed tables (migrations
-0022 facet values/summary, 0024 suggestion terms) and index-union recommendation
-candidates (0023): predictive skips facets; suggestions, NL parse-context and
-unfiltered-browse facet counts read small indexed tables; recommendation
-candidates come from index lookups. All byte-identical (precompute gated to the
-no-hide/show_all case with a live fallback), proven by equivalence tests, with 2
-guards mutation-tested. Indicative sandbox before→after: predictive p95
-**183→37 ms @10k / 1500→190 ms @100k**, unfiltered browse facets **909→237 ms
-@100k**, rec_similar **2273→1265 ms @100k**; at 10k all three F14 targets now
-PASS, at 100k they still miss on shared CPU (reported, not tuned). Hosted figures
-via the manual `benchmark.yml` workflow are Requires-Verification — see
-`docs/PHASE14B_REPORT.md`.
+only data/search engine. This repository is at **Phase 14c (write-path delta
+maintenance, on top of 14b's read-path de-scanning and 14's measurement &
+hardening)**. Phase 14b replaced per-request full-catalog scans with per-version
+precomputed tables + index-union recommendation candidates (read-path). Phase 14c
+fixes the WRITE path: a product update no longer re-aggregates the whole visible
+catalog — the precomputed structures (`search_vocabulary`, `search_facet_value`,
+`search_suggest_term`, `search_facet_summary`) are maintained by O(changed)
+DELTAs (migration 0025), with a per-shop advisory lock (no deadlock), a
+price-range dirty-flag + live fallback, and a reconcile + drift checker in the
+maintenance tick. Reads stay byte-identical, proven by a 250-op property test
+(delta == fresh rebuild), 8-way concurrency, drift corrupt-and-repair, a
+read-equivalence battery and 2 mutation-tested guards. Indicative sandbox
+write_update p50 **1231 → 15.6 ms @10k (79×)**, **10 428 → 30.9 ms @100k (337×)**,
+growth 10k→100k **1.98×** (≤ ~2× target → PASS); a 2 000-update burst drains in
+**33.5 s** (was ~41 min). Hosted figures via the manual `benchmark.yml` workflow
+are Requires-Verification — see `docs/PHASE14C_REPORT.md`.
 
 > Phase gating is enforced. Implemented so far: Phase 1 (foundation: auth,
 > embedded shell, multi-tenancy + RLS, privacy webhooks, billing), Phase 2/2.1

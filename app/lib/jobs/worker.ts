@@ -14,7 +14,7 @@ import {
   fetchCollectionNode,
 } from "~/lib/shopify/bulk.server";
 import { enqueueFullSync, enqueueRestockDrain, enqueueRestockConfirm } from "./queue";
-import { runReconciliationTick, runSignalRetention, runAnalyticsPartitionMaintenance, runAnalyticsRollup, runRestockMaintenance, runRestockConfirmSweep, selectInstalledShops } from "./maintenance";
+import { runReconciliationTick, runSignalRetention, runAnalyticsPartitionMaintenance, runAnalyticsRollup, runStructureReconcile, runRestockMaintenance, runRestockConfirmSweep, selectInstalledShops } from "./maintenance";
 import { runRestockDrainForShop } from "~/lib/restock/drain.server";
 import { runRestockConfirm } from "~/lib/restock/send.server";
 import { prismaRootExec } from "~/lib/db/root-exec.server";
@@ -110,6 +110,9 @@ export async function startWorker(): Promise<PgBoss> {
     // Phase 14.6c: bounded daily rollup of completed days (per shop, RLS) so the
     // long-range event_type/surface reports read the rollup, not millions of raw.
     const rolled = await runAnalyticsRollup(prismaRootExec(), withShopExec);
+    // Phase 14c: reconcile delta-maintained index structures vs a fresh rebuild
+    // (bounded rotation; repairs + logs any drift).
+    const reconciled = await runStructureReconcile(prismaRootExec(), withShopExec);
     // Phase 12.7: back-in-stock retention (per shop, bounded batches, RLS).
     const restock = await runRestockMaintenance(prismaRootExec(), withShopExec);
     // Phase 12.2 R5b: re-enqueue any stranded double-opt-in confirmations.
@@ -119,7 +122,7 @@ export async function startWorker(): Promise<PgBoss> {
     const shops = await selectInstalledShops(prismaRootExec());
     for (const id of shops) await enqueueRestockDrain(id).catch(() => {});
     logger.info(
-      { enqueued: n, signalsPurged: purged, partitionsEnsured: parts.ensured.length, partitionsDropped: parts.dropped, rollupShops: rolled, restock, confirmSwept },
+      { enqueued: n, signalsPurged: purged, partitionsEnsured: parts.ensured.length, partitionsDropped: parts.dropped, rollupShops: rolled, reconciled: reconciled.drifted, restock, confirmSwept },
       "reconciliation tick",
     );
   });

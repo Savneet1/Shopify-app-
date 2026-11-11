@@ -8,6 +8,8 @@ import {
 import { purgeRestockData, selectStrandedConfirmations, markConfirmSwept, type RestockMaintenanceResult } from "~/lib/restock/retention";
 import { loadEmailSettingsView } from "~/lib/email/settings";
 import { rollupAnalyticsDaily } from "~/lib/analytics/rollup";
+import { getActiveVersion } from "~/lib/index/engine";
+import { reconcileIndexStructures } from "~/lib/index/indexdelta";
 
 /**
  * Scheduled reconciliation (G8). A periodic tick enumerates INSTALLED shops
@@ -111,6 +113,32 @@ export async function runAnalyticsRollup(
   const ids = await selectInstalledShops(rootExec);
   for (const id of ids) await runner(id, (e) => rollupAnalyticsDaily(e, id, opts));
   return ids.length;
+}
+
+/**
+ * Phase 14c W1/W2c — periodic reconcile of the delta-maintained index structures
+ * against a fresh full rebuild, which repairs any drift and logs a masked
+ * counter. Bounded per tick: at most `limit` shops (oldest active version first,
+ * a simple rotation) so the O(catalog) rebuild cost is spread across ticks and
+ * never blocks a tick on every shop at once. Returns the number drifted.
+ */
+export async function runStructureReconcile(
+  rootExec: Exec,
+  runner: <T>(shopId: string, fn: (exec: Exec) => Promise<T>) => Promise<T>,
+  opts: { limit?: number } = {},
+): Promise<{ checked: number; drifted: number }> {
+  const limit = Math.max(1, opts.limit ?? 5);
+  const ids = (await selectInstalledShops(rootExec)).slice(0, limit);
+  let drifted = 0;
+  for (const id of ids) {
+    const res = await runner(id, async (e) => {
+      const active = await getActiveVersion(e, id);
+      if (!active) return { drifted: false, structures: [] };
+      return reconcileIndexStructures(e, id, active.id);
+    });
+    if (res.drifted) drifted++;
+  }
+  return { checked: ids.length, drifted };
 }
 
 /**
