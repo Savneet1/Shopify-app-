@@ -2,22 +2,25 @@
 
 A production-grade, multi-tenant Shopify **Search, Filter & Discovery** app built
 on the current official **Shopify React Router** template, with PostgreSQL as the
-only data/search engine. This repository is at **Phase 14c (write-path delta
-maintenance, on top of 14b's read-path de-scanning and 14's measurement &
-hardening)**. Phase 14b replaced per-request full-catalog scans with per-version
-precomputed tables + index-union recommendation candidates (read-path). Phase 14c
-fixes the WRITE path: a product update no longer re-aggregates the whole visible
-catalog — the precomputed structures (`search_vocabulary`, `search_facet_value`,
-`search_suggest_term`, `search_facet_summary`) are maintained by O(changed)
-DELTAs (migration 0025), with a per-shop advisory lock (no deadlock), a
-price-range dirty-flag + live fallback, and a reconcile + drift checker in the
-maintenance tick. Reads stay byte-identical, proven by a 250-op property test
-(delta == fresh rebuild), 8-way concurrency, drift corrupt-and-repair, a
-read-equivalence battery and 2 mutation-tested guards. Indicative sandbox
-write_update p50 **1231 → 15.6 ms @10k (79×)**, **10 428 → 30.9 ms @100k (337×)**,
-growth 10k→100k **1.98×** (≤ ~2× target → PASS); a 2 000-update burst drains in
-**33.5 s** (was ~41 min). Hosted figures via the manual `benchmark.yml` workflow
-are Requires-Verification — see `docs/PHASE14C_REPORT.md`.
+only data/search engine. This repository is at **Phase 14d (write path robust to
+stale planner statistics, on top of 14c's O(changed) delta maintenance)**. Phase
+14c made every product write maintain the precomputed structures by O(changed)
+deltas; Phase 14d fixes the plan those deltas get **immediately after a bulk
+build**, when `pg_class.reltuples` for `product_search_doc` is still -1 (a bulk
+INSERT never refreshes it), so the planner estimates the per-product lookup at ~1
+row and scans the whole shop via the shop-only index instead of the unique
+`(shop_id, index_version_id, product_id)` index — a ~35x write-path regression.
+Measured, no query rewrite or per-statement planner GUC escapes the stale
+mis-estimate; only fresh statistics do. The fix is an automatic owner-side
+post-build `ANALYZE` on a fixed table allowlist (`app/lib/jobs/analyze.server.ts`,
+wired into the full-sync handler — no new `app_runtime` privilege, no SECURITY
+DEFINER), plus autovacuum reloptions on the four derived tables (migration 0026)
+as the steady-state net. Proven by EXPLAIN-based plan tests + a mutation guard;
+reads unchanged. Indicative sandbox write_update p50 **stale → fresh (auto
+post-build ANALYZE)**: **126.7 → 17.3 ms @10k**, **401.4 → 19.3 ms @30k**,
+**1633.8 → 17.1 ms @100k**; fresh growth 10k→100k **1.0×** (≤ ~2×
+target → PASS). Hosted figures via the manual `benchmark.yml` workflow are
+Requires-Verification — see `docs/PHASE14D_REPORT.md`.
 
 > Phase gating is enforced. Implemented so far: Phase 1 (foundation: auth,
 > embedded shell, multi-tenancy + RLS, privacy webhooks, billing), Phase 2/2.1

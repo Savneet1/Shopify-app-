@@ -47,8 +47,49 @@ async function main() {
   console.log(`[bench] size=${size} seed=${seed} N=${N} concurrency=${concurrencies.join(",")}`);
 
   await bench.setup(`bench-${size}.myshopify.com`);
-  const load = await bench.load(size, seed);
+  // Phase 14d X1: pin the stale-statistics window (no autovacuum, no ANALYZE)
+  // so the first pass measures the real post-bulk-load worst case that production
+  // hit before the fix. The 14d fix (automatic post-build ANALYZE) is modelled by
+  // bench.analyzeBaseTables() below — the same fixed table list the build runs.
+  await bench.setAutovacuum(false);
+  const load = await bench.load(size, seed, { analyze: false });
   console.log(`[bench] loaded ${load.docCount} docs in ${Math.round(load.buildMs)}ms (rssΔ ${load.rssDeltaMb}MB); stats=${JSON.stringify(load.gen.stats)}`);
+
+  // ---- Phase 14d X1/X4: stale-stats worst case vs post-build-ANALYZE ----
+  const staleWriteN = parseInt(arg("stale-write-n", quick ? "10" : "15")!, 10); // small: match the maintainer's 15-update method; stays under autovacuum_naptime
+  const staleReadN = parseInt(arg("stale-read-n", quick ? "20" : "40")!, 10);
+  const readCases = ["predictive", "search_no_filter", "suggestions", "rec_similar"];
+  const measureReads = async (n: number) => {
+    const o: Record<string, { p50: number; p95: number; max: number }> = {};
+    for (const name of readCases) { const r = await bench.runNamedCase(name, n); o[name] = { p50: round(r.wall.p50), p95: round(r.wall.p95), max: round(r.wall.max) }; }
+    return o;
+  };
+  const staleReltuples = await bench.reltuples();
+  const staleExplain = await bench.explainDeltaWritePath();
+  const staleWrite = await bench.runWriteCase("write_update", staleWriteN);
+  const staleReads = await measureReads(staleReadN);
+  console.log(`[bench] STALE (reltuples=${staleReltuples}) write_update p50=${round(staleWrite.wall.p50)}ms p95=${round(staleWrite.wall.p95)}ms max=${round(staleWrite.wall.max)}ms`);
+  for (const e of staleExplain) console.log(`[bench] STALE plan ${pad(e.label, 30)} idx=${pad(e.index, 38)} rowsRemoved=${e.rowsRemoved} buffers=${e.buffers} ${e.ms}ms`);
+
+  // The 14d fix: owner-side ANALYZE on the fixed build-output table list, exactly
+  // what the full-sync job now runs automatically (analyze.server.ts). No manual
+  // step — the system refreshes its own stats at build completion.
+  await bench.analyzeBaseTables();
+  await bench.setAutovacuum(true);
+  const freshReltuples = await bench.reltuples();
+  const freshExplain = await bench.explainDeltaWritePath();
+  const freshWrite = await bench.runWriteCase("write_update", staleWriteN);
+  const freshReads = await measureReads(staleReadN);
+  console.log(`[bench] FRESH (reltuples=${freshReltuples}) write_update p50=${round(freshWrite.wall.p50)}ms p95=${round(freshWrite.wall.p95)}ms max=${round(freshWrite.wall.max)}ms`);
+  const staleStats = {
+    staleReltuples, freshReltuples,
+    write: {
+      stale: { p50: round(staleWrite.wall.p50), p95: round(staleWrite.wall.p95), max: round(staleWrite.wall.max), n: staleWriteN },
+      fresh: { p50: round(freshWrite.wall.p50), p95: round(freshWrite.wall.p95), max: round(freshWrite.wall.max), n: staleWriteN },
+    },
+    reads: { stale: staleReads, fresh: freshReads },
+    explain: { stale: staleExplain, fresh: freshExplain },
+  };
 
   // profiling pass (record SQL) → EXPLAIN top statements
   bench.clearProfile();
@@ -102,13 +143,16 @@ async function main() {
   }
   // Phase 14c W3 target: per-update p50 <= 100 ms @10k (growth 10k->100k checked across runs).
   checks.push({ target: `write_update p50 (@${size})`, measured: round(wUpdate.wall.p50), limit: 100, unit: "ms", pass: wUpdate.wall.p50 <= 100 });
+  // Phase 14d X4 target: write_update p50 <= 100 ms IMMEDIATELY after bulk load
+  // WITHOUT manual ANALYZE — i.e. with the automatic post-build ANALYZE (fresh).
+  checks.push({ target: `write_update p50 post-build-ANALYZE (@${size})`, measured: round(freshWrite.wall.p50), limit: 100, unit: "ms", pass: freshWrite.wall.p50 <= 100 });
 
   const payload = {
     startedAt: started.toISOString(), size, seed, N, concurrencies,
     machine: { cores: os.cpus().length, ram_gb: round(os.totalmem() / 1e9), platform: process.platform, node: process.version },
     postgres: info,
     build: { ms: round(load.buildMs), docCount: load.docCount, rssDeltaMb: load.rssDeltaMb, stats: load.gen.stats },
-    write,
+    write, staleStats,
     results, checks, topStmts: topStmts.map((t) => ({ sql: t.sql.slice(0, 200), maxMs: round(t.maxMs), count: t.count })),
   };
   const outDir = join(process.cwd(), "scripts", "bench", "out");
@@ -143,6 +187,24 @@ function writeDoc(p: ReturnType<typeof Object> & Record<string, any>, explains: 
   lines.push(`## Query latency (ms) and statements/request`, "");
   lines.push(`| case | conc | p50 | p95 | p99 | stmts (p50) |`, `|---|---|---|---|---|---|`);
   for (const r of p.results) lines.push(`| ${r.name} | ${r.concurrency} | ${round(r.wall.p50)} | ${round(r.wall.p95)} | ${round(r.wall.p99)} | ${round(r.stmts.p50)} |`);
+  if (p.staleStats) {
+    const ss = p.staleStats;
+    lines.push("", `## Phase 14d — stale statistics (immediately after bulk load)`, "");
+    lines.push(`product_search_doc pg_class.reltuples: **${ss.staleReltuples}** stale (−1 = never analyzed) → **${ss.freshReltuples}** after post-build ANALYZE.`, "");
+    lines.push(`### write_update per-update latency (ms)`, "");
+    lines.push(`| state | p50 | p95 | max |`, `|---|---|---|---|`);
+    lines.push(`| STALE (no ANALYZE) | ${ss.write.stale.p50} | ${ss.write.stale.p95} | ${ss.write.stale.max} |`);
+    lines.push(`| FRESH (auto post-build ANALYZE) | ${ss.write.fresh.p50} | ${ss.write.fresh.p95} | ${ss.write.fresh.max} |`, "");
+    lines.push(`### key read cases p50 (ms) — stale vs fresh`, "");
+    lines.push(`| case | stale p50 | fresh p50 |`, `|---|---|---|`);
+    for (const name of Object.keys(ss.reads.stale)) lines.push(`| ${name} | ${ss.reads.stale[name].p50} | ${ss.reads.fresh[name].p50} |`);
+    lines.push("", `### delta write-path statement plans (EXPLAIN ANALYZE)`, "");
+    lines.push(`| statement | stale index on product_search_doc | stale rowsRemoved | stale buffers | fresh index | fresh buffers |`, `|---|---|---|---|---|---|`);
+    for (const se of ss.explain.stale) {
+      const fe = ss.explain.fresh.find((x: { label: string }) => x.label === se.label) || {};
+      lines.push(`| ${se.label} | ${se.index} | ${se.rowsRemoved} | ${se.buffers} | ${fe.index ?? "?"} | ${fe.buffers ?? "?"} |`);
+    }
+  }
   lines.push("", `## Targets (F14) — PASS/FAIL`, "");
   lines.push(`| target | measured | limit | result |`, `|---|---|---|---|`);
   for (const c of p.checks) lines.push(`| ${c.target} | ${c.measured}${c.unit} | ${c.limit}${c.unit} | **${c.pass ? "PASS" : "FAIL"}** |`);

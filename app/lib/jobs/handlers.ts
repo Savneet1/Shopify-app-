@@ -27,6 +27,13 @@ export interface BulkFetchResult {
 export interface FullSyncDeps {
   runner: ShopRunner;
   fetchBulkCatalog: (shopId: string) => Promise<BulkFetchResult>;
+  /**
+   * Phase 14d: refresh planner statistics on the build-output tables after a
+   * successful full sync (owner-side ANALYZE; see analyze.server.ts). Optional +
+   * best-effort — a missing or failing refresh never fails the sync (autovacuum
+   * reloptions are the fallback). Injected so handler tests stay engine-free.
+   */
+  postBuildAnalyze?: () => Promise<unknown>;
 }
 
 export interface FullSyncJob {
@@ -67,6 +74,14 @@ export async function handleCatalogSyncFull(
       throw new Error(`full sync failed: ${res.reason}`);
     }
     await deps.runner(shopId, (e) => markJob(e, shopId, dedupeKey, "completed"));
+    // Phase 14d: the build just bulk-inserted docs and rebuilt the derived
+    // structures, leaving pg_class.reltuples stale (-1) for product_search_doc.
+    // Refresh statistics synchronously so the incremental delta write path uses
+    // the unique index immediately, instead of waiting for async autovacuum.
+    // Best-effort: never fails the completed sync.
+    if (deps.postBuildAnalyze) {
+      try { await deps.postBuildAnalyze(); } catch { /* non-fatal; autovacuum fallback */ }
+    }
     return { ok: true, version: res.version, docCount: res.docCount };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

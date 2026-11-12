@@ -11,6 +11,7 @@ import { rebuildVocabulary } from "~/lib/search/vocabulary";
 import { getActiveVersion } from "~/lib/index/engine";
 import { storefrontSearchWithExec } from "~/lib/search/storefront";
 import { predictiveWithExec } from "~/lib/search/predictive";
+import { catalogSuggestionsWithExec } from "~/lib/search/suggest";
 import { getRecommendations } from "~/lib/recommend/engine";
 import { saveCombinedMode } from "~/lib/search/combined";
 import { generateCatalog, type GenResult } from "./gen";
@@ -80,7 +81,7 @@ export class Bench {
 
   /** Load a synthetic catalog through the real full-sync build path. Returns
    * build wall-ms, docCount, and peak RSS delta (MB). */
-  async load(size: number, seed = 1337): Promise<{ buildMs: number; docCount: number; rssDeltaMb: number; gen: GenResult }> {
+  async load(size: number, seed = 1337, opts?: { analyze?: boolean }): Promise<{ buildMs: number; docCount: number; rssDeltaMb: number; gen: GenResult }> {
     this.gen = generateCatalog({ size, seed });
     const runner = <T,>(_sid: string, fn: (e: Exec) => Promise<T>) => this.withShop((e) => fn(e));
     const rss0 = process.memoryUsage().rss;
@@ -92,14 +93,24 @@ export class Bench {
     } as never);
     const buildMs = performance.now() - t;
     const rssDeltaMb = Math.round((process.memoryUsage().rss - rss0) / 1e6);
-    // Phase 14.2: refresh planner statistics after the bulk build (owner-side;
-    // app_runtime cannot ANALYZE and we add no SECURITY DEFINER). In production
-    // migration 0020's autovacuum settings do this promptly; here we ANALYZE
-    // explicitly so the reported plans are representative of steady state.
-    await this.p.owner.query("ANALYZE product_search_doc");
-    await this.p.owner.query("ANALYZE product");
-    await this.p.owner.query("ANALYZE variant");
+    // Phase 14d X1: by default we DO NOT ANALYZE here, so the first measured pass
+    // reflects the real post-bulk-load STALE-STATISTICS state that production
+    // hits (app_runtime cannot ANALYZE; PG16 has no MAINTAIN; autovacuum has not
+    // yet reached product_search_doc). Pass { analyze: true } for the steady-state
+    // (fresh-stats) pass. `analyzeBaseTables()` performs the transition.
+    if (opts?.analyze) await this.analyzeBaseTables();
     return { buildMs, docCount: (res as { docCount?: number }).docCount ?? 0, rssDeltaMb, gen: this.gen };
+  }
+
+  /** Owner-side ANALYZE of the hot tables — the steady-state (fresh-stats) point.
+   * Production reaches this via autovacuum (migration 0020/0026 reloptions) or
+   * the Phase 14d post-build maintenance ANALYZE; the harness calls it directly
+   * to measure the fresh-stats upper bound next to the stale-stats worst case. */
+  async analyzeBaseTables(): Promise<void> {
+    for (const tbl of [
+      "product_search_doc", "product", "variant",
+      "search_vocabulary", "search_facet_value", "search_facet_summary", "search_suggest_term",
+    ]) await this.p.owner.query(`ANALYZE ${tbl}`);
   }
 
   /** Run one query case: warm-up, then N iterations at the given concurrency. */
@@ -170,6 +181,7 @@ export class Bench {
     const _ = record; // profiling uses the same ops
     return [
       { name: "predictive", op: (e) => predictiveWithExec(e, this.shopId, { q: term() }) },
+      { name: "suggestions", op: (e) => catalogSuggestionsWithExec(e, this.shopId, (term() || "sho").slice(0, 4)) },
       { name: "search_no_filter", op: (e) => storefrontSearchWithExec(e, this.shopId, { q: term(), nl: false, limit: 24, offset: 0 }) },
       { name: "search_1_filter", op: (e) => storefrontSearchWithExec(e, this.shopId, { q: term(), nl: false, limit: 24, offset: 0, filters: { vendor: [vendor()] } }) },
       { name: "search_3_filters", op: (e) => storefrontSearchWithExec(e, this.shopId, { q: term(), nl: false, limit: 24, offset: 0, filters: { vendor: [vendor()], productType: [type()], available: true } }) },
@@ -252,7 +264,96 @@ export class Bench {
     return summarize(t);
   }
 
+  // ---- Phase 14d: stale-statistics measurement support ----
+
+  /** Pin the stale-statistics window: toggle autovacuum on the build-output
+   * tables (owner), so a stale pass is not silently "fixed" by an autovacuum
+   * analyze firing mid-measurement. Re-enabled for the fresh pass. */
+  async setAutovacuum(enabled: boolean): Promise<void> {
+    const v = enabled ? "true" : "false";
+    for (const tbl of [
+      "product_search_doc", "product", "variant",
+      "search_vocabulary", "search_facet_value", "search_facet_summary", "search_suggest_term",
+    ]) await this.p.owner.query(`ALTER TABLE ${tbl} SET (autovacuum_enabled = ${v})`);
+  }
+
+  /** pg_class.reltuples for product_search_doc (−1 == never analyzed). */
+  async reltuples(): Promise<number> {
+    const { rows } = await this.p.owner.query<{ rt: string }>(
+      "SELECT reltuples::bigint AS rt FROM pg_class WHERE relname = 'product_search_doc'");
+    return Number(rows[0]?.rt ?? 0);
+  }
+
+  /** Measure a single named read case at concurrency 1. */
+  async runNamedCase(name: string, N: number): Promise<CaseResult> {
+    const c = this.cases(false).find((x) => x.name === name);
+    if (!c) throw new Error(`no case ${name}`);
+    return this.runCase(name, N, 1, c.op);
+  }
+
+  /** Phase 14d X1: capture EXPLAIN (ANALYZE, BUFFERS) for the delta write-path
+   * statements that read product_search_doc, in the CURRENT statistics state.
+   * Records one real applyProductUpsert to get the exact statements+params, then
+   * re-plans each inside a rolled-back transaction (so the capture mutates
+   * nothing). Returns compact plan facts so the report can show which statements
+   * scan the whole shop when stats are stale. */
+  async explainDeltaWritePath(): Promise<{ label: string; index: string; seqScan: boolean; estRows: number; actualRows: number; rowsRemoved: number; buffers: number; ms: number }[]> {
+    const gid = (await this.sampleGids(1))[0];
+    const rec: { sql: string; ms: number; params: unknown[] }[] = [];
+    await this.withShop(async (e, _s, r) => {
+      const runner1 = <T,>(_sid: string, fn: (ee: Exec) => Promise<T>) => fn(e);
+      await applyProductUpsert(runner1 as never, this.shopId, this.buildUpdate(gid, 0) as never);
+      if (r) rec.push(...r.splice(0));
+    }, true);
+    // statements that touch product_search_doc and are worth planning
+    const want = rec.filter((s) => /product_search_doc/.test(s.sql) && /^\s*(insert|update|with|select)/i.test(s.sql));
+    const seen = new Set<string>();
+    const out: { label: string; index: string; seqScan: boolean; estRows: number; actualRows: number; rowsRemoved: number; buffers: number; ms: number }[] = [];
+    for (const s of want) {
+      const key = normalizeSql(s.sql);
+      if (seen.has(key)) continue; seen.add(key);
+      const label = labelForDelta(s.sql);
+      const plan = await this.explainRolledBack(s.sql, s.params);
+      if (!plan) continue;
+      const psdLine = plan.split("\n").find((l) => /on product_search_doc/.test(l)) ?? "";
+      const index = (psdLine.match(/using (\w+)/) || [])[1] ?? (/Seq Scan on product_search_doc/.test(psdLine) ? "(seqscan)" : "(none)");
+      out.push({
+        label,
+        index,
+        seqScan: /Seq Scan on product_search_doc/.test(plan),
+        estRows: Number((psdLine.match(/rows=(\d+)/) || [])[1] ?? 0),
+        actualRows: Number((psdLine.match(/actual time=[\d.]+\.\.[\d.]+ rows=(\d+)/) || [])[1] ?? 0),
+        rowsRemoved: Math.max(...(plan.match(/Rows Removed by Filter: (\d+)/g) || []).map((m) => Number(m.split(": ")[1])), 0),
+        buffers: Number((plan.match(/Buffers: shared hit=(\d+)/) || [])[1] ?? 0),
+        ms: Number((plan.match(/Execution Time: ([\d.]+)/) || [])[1] ?? 0),
+      });
+    }
+    return out;
+  }
+
+  /** EXPLAIN (ANALYZE, BUFFERS) a statement inside a rolled-back tenant txn so
+   * executing a mutating statement for its plan leaves no trace. */
+  private async explainRolledBack(sql: string, params: unknown[]): Promise<string | null> {
+    const client = await this.p.runtime.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT set_config('app.shop_id', $1, true)", [this.shopId]);
+      const r = await client.query<{ "QUERY PLAN": string }>(`EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) ${sql}`, params as unknown[]);
+      await client.query("ROLLBACK");
+      return r.rows.map((x) => x["QUERY PLAN"]).join("\n");
+    } catch { try { await client.query("ROLLBACK"); } catch { /* ignore */ } return null; } finally { client.release(); }
+  }
+
   async close(): Promise<void> { await this.p.runtime.end(); await this.p.owner.end(); }
+}
+
+function labelForDelta(sql: string): string {
+  if (/INTO search_vocabulary/i.test(sql)) return "vocab delta (insert/subtract)";
+  if (/INTO search_facet_value/i.test(sql)) return "facet_value delta";
+  if (/INTO search_suggest_term/i.test(sql)) return "suggest delta";
+  if (/UPDATE search_facet_summary/i.test(sql)) return "facet_summary delta";
+  if (/INTO product_search_doc/i.test(sql) || /UPDATE product_search_doc/i.test(sql)) return "doc upsert";
+  return "psd read";
 }
 
 /** Collapse a SQL string to a grouping key (ignore whitespace + numeric literals). */

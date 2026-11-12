@@ -45,6 +45,14 @@ in `docs/PHASE14C.md`.
 ## W3 — write-path measurement (SANDBOX, single shared node — INDICATIVE)
 Per-update latency through the real `applyProductUpsert` webhook path.
 
+> **Relabelled by Phase 14d (X5):** the 14c "after" numbers below were measured
+> with **fresh planner statistics** — the bench harness ran an explicit owner-side
+> `ANALYZE` after the bulk load, so these are the **steady-state (fresh-stats)**
+> best case, NOT the state immediately after a bulk load. Phase 14d measured the
+> stale-statistics worst case (no ANALYZE: write_update p50 ~130–150 ms @10k) and
+> added an automatic post-build ANALYZE so production reaches these fresh-stats
+> numbers without a manual step. See docs/PHASE14D_REPORT.md.
+
 ### 10k docs
 | metric | before (17ec787, full rebuild) | after (14c delta) |
 |---|---|---|

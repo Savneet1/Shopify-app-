@@ -18,6 +18,7 @@ import { runReconciliationTick, runSignalRetention, runAnalyticsPartitionMainten
 import { runRestockDrainForShop } from "~/lib/restock/drain.server";
 import { runRestockConfirm } from "~/lib/restock/send.server";
 import { prismaRootExec } from "~/lib/db/root-exec.server";
+import { runPostBuildAnalyze } from "./analyze.server";
 import { logger } from "~/lib/logger.server";
 
 /**
@@ -42,6 +43,7 @@ export async function startWorker(): Promise<PgBoss> {
         await handleCatalogSyncFull(job.data, {
           runner: withShopExec,
           fetchBulkCatalog,
+          postBuildAnalyze: () => runPostBuildAnalyze(),
         });
       }
     },
