@@ -60,9 +60,17 @@ cost each write paid on `17ec787`.
 
 | size | STALE (no ANALYZE) p50 / p95 / max | FRESH (auto post-build ANALYZE) p50 / p95 / max | 14b full rebuild p50 |
 |---|---|---|---|
-| 10k | **126.7 / 164.7 / 164.7** | **17.3 / 22.1 / 22.1** | 1436 |
-| 30k | **401.4 / 515.5 / 515.5** | **19.3 / 26.1 / 26.1** | 2915 |
-| 100k | **1633.8 / 1798.8 / 1798.8** | **17.1 / 20.6 / 20.6** | 8760 |
+| 10k | **126.7 / 164.7 / 164.7** (natural) | **17.3 / 22.1 / 22.1** | 1436 |
+| 30k | **401.4 / 515.5 / 515.5** (natural) | **19.3 / 26.1 / 26.1** | 2915 |
+| 100k | **1633.8 / 1798.8 / 1798.8** (pinned ²) | **17.1 / 20.6 / 20.6** | 8760 |
+
+² **The 100k STALE row is a FORCED stale state, not a natural one.** 10k/30k
+captured `reltuples = -1` naturally right after the bulk load; at 100k the stale
+value was pinned to the same genuine post-bulk-load sentinel (`reltuples = -1`) via
+a superuser `UPDATE pg_class` to measure deterministically without an autovacuum
+race during the long single-shard sandbox load (see "100k measurement method"
+below). It reproduces the real condition; it was not observed to arise unaided at
+100k in this run.
 
 ### X4 target — write_update p50 ≤ 100 ms at 10k / 30k / 100k immediately after bulk load WITHOUT manual ANALYZE (growth 10k→100k ≤ ~2x)
 

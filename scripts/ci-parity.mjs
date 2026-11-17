@@ -57,7 +57,7 @@ function localDbUrls() {
   const out = {};
   try {
     const env = readFileSync(join(ROOT, ".env"), "utf8");
-    for (const key of ["DATABASE_URL", "DIRECT_DATABASE_URL", "TEST_DATABASE_URL", "TEST_DIRECT_DATABASE_URL"]) {
+    for (const key of ["DATABASE_URL", "DIRECT_DATABASE_URL", "TEST_DATABASE_URL", "TEST_DIRECT_DATABASE_URL", "MAINTENANCE_DATABASE_URL", "TEST_MAINTENANCE_DATABASE_URL"]) {
       const m = env.match(new RegExp(`^${key}\\s*=\\s*(.*)$`, "m"));
       if (m) out[key] = m[1].trim().replace(/^["']|["']$/g, "");
     }

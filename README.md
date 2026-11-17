@@ -2,8 +2,9 @@
 
 A production-grade, multi-tenant Shopify **Search, Filter & Discovery** app built
 on the current official **Shopify React Router** template, with PostgreSQL as the
-only data/search engine. This repository is at **Phase 14d (write path robust to
-stale planner statistics, on top of 14c's O(changed) delta maintenance)**. Phase
+only data/search engine. This repository is at **Phase 14e (hardening the Phase 14d
+post-build ANALYZE: least-privilege maintenance role, timeouts, self-heal, admin
+notice)**. Phase
 14c made every product write maintain the precomputed structures by O(changed)
 deltas; Phase 14d fixes the plan those deltas get **immediately after a bulk
 build**, when `pg_class.reltuples` for `product_search_doc` is still -1 (a bulk
@@ -21,6 +22,17 @@ post-build ANALYZE)**: **126.7 → 17.3 ms @10k**, **401.4 → 19.3 ms @30k**,
 **1633.8 → 17.1 ms @100k**; fresh growth 10k→100k **1.0×** (≤ ~2×
 target → PASS). Hosted figures via the manual `benchmark.yml` workflow are
 Requires-Verification — see `docs/PHASE14D_REPORT.md`.
+
+**Phase 14e** hardens that post-build ANALYZE. It no longer runs as the schema
+owner: a dedicated least-privilege role **`app_maintenance`** owns only the seven
+build-output tables (migration 0027) and the refresh connects as it via
+**`MAINTENANCE_DATABASE_URL`** (the `DIRECT_DATABASE_URL` runtime use is removed).
+The maintenance client is fully bounded (connect ≤ 10 s, statement ≤ 120 s, overall
+≤ 150 s) and never throws; a **self-heal** check on the maintenance tick repairs
+stale stats after a missed/failed build; and the admin overview shows a notice when
+statistics maintenance is unconfigured or failing. All verified with the real roles
+(it can ANALYZE the seven, and cannot read or write `shop`, tokens, subscriber
+emails or any other table) — see `docs/PHASE14E.md`.
 
 > Phase gating is enforced. Implemented so far: Phase 1 (foundation: auth,
 > embedded shell, multi-tenancy + RLS, privacy webhooks, billing), Phase 2/2.1

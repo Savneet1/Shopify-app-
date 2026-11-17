@@ -11,7 +11,13 @@ const EnvSchema = z.object({
   // Phase 1: empty string is valid and expected (no access scopes).
   SCOPES: z.string().default(""),
   DATABASE_URL: z.string().min(1),
+  // Owner connection — migrations / pg-boss schema install only. Never used by
+  // runtime request/worker code (Phase 14e removed the last such use).
   DIRECT_DATABASE_URL: z.string().min(1).optional(),
+  // Phase 14e — least-privilege maintenance connection (app_maintenance) used
+  // ONLY by the post-build / self-heal ANALYZE. Optional: when unset the ANALYZE
+  // path no-ops and autovacuum (reloptions 0020/0026) is the fallback.
+  MAINTENANCE_DATABASE_URL: z.string().min(1).optional(),
   LOG_LEVEL: z.string().default("info"),
   NODE_ENV: z
     .enum(["development", "test", "production"])

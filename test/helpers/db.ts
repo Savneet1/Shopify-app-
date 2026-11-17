@@ -24,6 +24,9 @@ export function pgExec(client: pg.PoolClient): Exec {
 export interface TestDb {
   runtimePool: pg.Pool;
   ownerPool: pg.Pool;
+  /** Phase 14e: app_maintenance role pool (least-privilege; owns only the 7
+   *  build-output tables). null when TEST_MAINTENANCE_DATABASE_URL is unset. */
+  maintenancePool: pg.Pool | null;
   resetDb: () => Promise<void>;
   resolveShop: (domain: string) => Promise<string>;
   withShopClient: <T>(
@@ -42,6 +45,10 @@ export function makeDb(): TestDb {
 
   const runtimePool = new pg.Pool({ connectionString: runtimeUrl, max: 4 });
   const ownerPool = new pg.Pool({ connectionString: ownerUrl, max: 2 });
+  const maintenanceUrl = process.env.TEST_MAINTENANCE_DATABASE_URL;
+  const maintenancePool = maintenanceUrl
+    ? new pg.Pool({ connectionString: maintenanceUrl, max: 2 })
+    : null;
 
   async function resetDb() {
     await ownerPool.query("TRUNCATE shop CASCADE");
@@ -85,6 +92,7 @@ export function makeDb(): TestDb {
   async function close() {
     await runtimePool.end();
     await ownerPool.end();
+    if (maintenancePool) await maintenancePool.end();
   }
 
   const rootExec: Exec = {
@@ -97,6 +105,7 @@ export function makeDb(): TestDb {
   return {
     runtimePool,
     ownerPool,
+    maintenancePool,
     resetDb,
     resolveShop,
     withShopClient,

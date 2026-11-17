@@ -10,6 +10,9 @@ import { loadEmailSettingsView } from "~/lib/email/settings";
 import { rollupAnalyticsDaily } from "~/lib/analytics/rollup";
 import { getActiveVersion } from "~/lib/index/engine";
 import { reconcileIndexStructures } from "~/lib/index/indexdelta";
+import { runPostBuildAnalyze, type AnalyzeResult } from "./analyze.server";
+import { detectStaleMaintenanceStats } from "./stats-health.server";
+import { logger } from "~/lib/logger.server";
 
 /**
  * Scheduled reconciliation (G8). A periodic tick enumerates INSTALLED shops
@@ -192,4 +195,86 @@ export async function runRestockConfirmSweep(
     await runner(id, (e) => markConfirmSwept(e, id, stranded, now));
   }
   return total;
+}
+
+/**
+ * Phase 14e E4 — self-healing stale-statistics check.
+ *
+ * The synchronous post-build ANALYZE (analyze.server.ts) covers the normal path,
+ * but a worker restart mid-build, a missed build, or an ANALYZE that timed out can
+ * still leave the seven build-output tables with stale planner statistics — which
+ * silently makes product writes ~35x slower (docs/PHASE14D.md). This tick cheaply
+ * detects that condition and repairs it, bounded and idempotent.
+ *
+ * DETECTION is read-only and runs as app_runtime (pg_stat_user_tables + pg_class
+ * are catalog-readable without any table privilege): a table is STALE when it has
+ * never been analyzed (reltuples <= 0) or has drifted more than `staleRatio` of
+ * its live rows since the last analyze (n_mod_since_analyze > ratio * n_live_tup).
+ * DETECTION (detectStaleMaintenanceStats) lives in ./stats-health.server and is
+ * also used by the admin overview (E3). REPAIR reuses the same bounded,
+ * least-privilege ANALYZE (app_maintenance via MAINTENANCE_DATABASE_URL). Both
+ * never throw.
+ */
+
+// Module-level throttle: the self-heal ANALYZE runs at most once per interval.
+let lastSelfHealAt = 0;
+/** Test hook — reset the self-heal throttle clock. */
+export function resetStatsSelfHealThrottle(): void {
+  lastSelfHealAt = 0;
+}
+
+export interface SelfHealResult {
+  ran: boolean;
+  stale: string[];
+  reason?: "throttled" | "fresh" | "not-configured" | "detect-error";
+  analyze?: AnalyzeResult;
+}
+
+export async function runStatsSelfHeal(
+  rootExec: Exec,
+  opts: {
+    now?: number;
+    minIntervalMs?: number;
+    staleRatio?: number;
+    maintenanceUrl?: string;
+    analyze?: (o?: { connectionString?: string }) => Promise<AnalyzeResult>;
+    detect?: (exec: Exec, o?: { staleRatio?: number }) => Promise<string[]>;
+  } = {},
+): Promise<SelfHealResult> {
+  const now = opts.now ?? Date.now();
+  const minInterval = opts.minIntervalMs ?? 15 * 60 * 1000; // 15 min
+  if (now - lastSelfHealAt < minInterval) {
+    return { ran: false, stale: [], reason: "throttled" };
+  }
+  lastSelfHealAt = now; // count the interval from this check, whatever the outcome
+
+  const detect = opts.detect ?? detectStaleMaintenanceStats;
+  let stale: string[];
+  try {
+    stale = await detect(rootExec, { staleRatio: opts.staleRatio });
+  } catch (err) {
+    // Detection must never break the tick.
+    logger.warn({ err: err instanceof Error ? err.message : String(err) }, "stats self-heal detection failed (non-fatal)");
+    return { ran: false, stale: [], reason: "detect-error" };
+  }
+
+  if (stale.length === 0) return { ran: false, stale: [], reason: "fresh" };
+
+  const maintenanceUrl = opts.maintenanceUrl ?? process.env.MAINTENANCE_DATABASE_URL;
+  if (!maintenanceUrl) {
+    // E3-adjacent: surface the degraded condition loudly.
+    logger.error({ stale, fallback: "autovacuum" }, "stale planner statistics detected but MAINTENANCE_DATABASE_URL is not configured — product writes can be much slower until autovacuum catches up");
+    return { ran: false, stale, reason: "not-configured" };
+  }
+
+  const analyze = opts.analyze ?? runPostBuildAnalyze;
+  let result: AnalyzeResult | undefined;
+  try {
+    result = await analyze({ connectionString: maintenanceUrl });
+    logger.info({ stale, analyzed: result.analyzed.length, status: result.status }, "stats self-heal ran bounded ANALYZE");
+  } catch (err) {
+    // runPostBuildAnalyze is contractually non-throwing, but belt-and-braces.
+    logger.warn({ err: err instanceof Error ? err.message : String(err) }, "stats self-heal ANALYZE failed (non-fatal)");
+  }
+  return { ran: true, stale, analyze: result };
 }

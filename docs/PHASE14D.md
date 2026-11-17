@@ -80,9 +80,18 @@ gain. The robust fix is to make statistics fresh (X2c) and keep them fresh (X2a)
 
 ### X2c — automatic post-build ANALYZE (primary)
 
+> **Superseded by Phase 14e.** As shipped in 14d, `runPostBuildAnalyze()` used the
+> migration **owner** connection (`DIRECT_DATABASE_URL` = `app_owner`). That put
+> the owner credential in the worker runtime for the first time — too much
+> authority for a stats refresh. **Phase 14e replaced it with a dedicated
+> least-privilege role `app_maintenance` (`MAINTENANCE_DATABASE_URL`) that owns
+> only the seven build-output tables**, and removed the `DIRECT_DATABASE_URL`
+> fallback, added connect/statement/overall timeouts, a self-heal tick and an
+> admin notice. See `docs/PHASE14E.md` (and its "Privilege model" section). The
+> description below is the 14d design, kept for history.
+
 `app/lib/jobs/analyze.server.ts` `runPostBuildAnalyze()` opens a short-lived
-**owner** connection (`DIRECT_DATABASE_URL` = `app_owner`, the role that already
-runs migrations) and runs `ANALYZE` on a **fixed module-constant allowlist**
+maintenance connection and runs `ANALYZE` on a **fixed module-constant allowlist**
 (`product_search_doc`, `product`, `variant`, and the four derived tables). It is
 wired into the full-sync handler (`handleCatalogSyncFull`) as an injected,
 best-effort step that runs after a successful build and never fails the sync.
@@ -94,13 +103,19 @@ statistics the moment a build completes, closing the stale window at its source.
 `NOSUPERUSER`/`NOBYPASSRLS` and is not a table owner, and PostgreSQL 16 has no
 `MAINTAIN` privilege, so the app role cannot `ANALYZE`. The two options were:
 
-- **Option 1 (chosen):** reuse the existing owner connection string
-  (`DIRECT_DATABASE_URL`) for a maintenance-only client that does nothing but
-  `ANALYZE` on the fixed allowlist. It takes no input, touches no tenant rows,
-  and grants `app_runtime` **no** new capability. The only implication is that the
-  worker process must have `DIRECT_DATABASE_URL` configured (it already does in
-  CI/prod for migrations and pg-boss). If it is absent, the refresh is a logged
-  no-op and the system falls back to autovacuum (Option 0 / X2a).
+- **Option 1 (chosen in 14d, revised in 14e):** a maintenance-only client that does
+  nothing but `ANALYZE` on the fixed allowlist. It takes no input, touches no tenant
+  rows, and grants `app_runtime` **no** new capability.
+  **Correction (finding, Phase 14e):** 14d described this as reusing
+  `DIRECT_DATABASE_URL` and claimed the worker "already" has it in CI/prod "for
+  migrations and pg-boss". That was wrong: pg-boss connects with
+  `BOSS_DATABASE_URL || DATABASE_URL` (the `app_runtime` role), and before 14d **no
+  runtime code read `DIRECT_DATABASE_URL`** — migrations run as a separate step, not
+  in the worker. 14d therefore introduced the owner credential into the worker
+  runtime for the first time. Phase 14e corrects this by using a dedicated
+  least-privilege `MAINTENANCE_DATABASE_URL` (`app_maintenance`) instead, with no
+  owner credential at runtime. If it is absent, the refresh is a logged no-op and
+  the system falls back to autovacuum (Option 0 / X2a).
 - **Option 2 (not taken):** a no-argument, allowlisted `SECURITY DEFINER`
   function. Rejected because Option 1 needs no new database object and no entry on
   the definer allowlist — strictly less surface.
@@ -142,9 +157,12 @@ generous end-to-end time bound (X4).
 
 ## Limitations
 
-- The guarantee depends on the worker having `DIRECT_DATABASE_URL`. Without it the
-  post-build ANALYZE is a logged no-op and freshness falls back to autovacuum
-  (correct, but with the async window above).
+- The guarantee depends on the worker having the maintenance connection
+  (`MAINTENANCE_DATABASE_URL` as of Phase 14e; `DIRECT_DATABASE_URL` in 14d as
+  shipped). Without it the post-build ANALYZE is a logged no-op and freshness falls
+  back to autovacuum (correct, but with the async window above). Phase 14e adds a
+  self-heal tick and an admin notice so a missing/failing maintenance connection is
+  detected and surfaced rather than silent.
 - The post-build ANALYZE is a full ANALYZE of seven tables; it is bounded (fixed
   list, runs once per build) and cheap relative to the build it follows.
 - Incremental writes between full builds keep `reltuples` approximately valid and

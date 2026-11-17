@@ -14,7 +14,7 @@ import {
   fetchCollectionNode,
 } from "~/lib/shopify/bulk.server";
 import { enqueueFullSync, enqueueRestockDrain, enqueueRestockConfirm } from "./queue";
-import { runReconciliationTick, runSignalRetention, runAnalyticsPartitionMaintenance, runAnalyticsRollup, runStructureReconcile, runRestockMaintenance, runRestockConfirmSweep, selectInstalledShops } from "./maintenance";
+import { runReconciliationTick, runSignalRetention, runAnalyticsPartitionMaintenance, runAnalyticsRollup, runStructureReconcile, runRestockMaintenance, runRestockConfirmSweep, selectInstalledShops, runStatsSelfHeal } from "./maintenance";
 import { runRestockDrainForShop } from "~/lib/restock/drain.server";
 import { runRestockConfirm } from "~/lib/restock/send.server";
 import { prismaRootExec } from "~/lib/db/root-exec.server";
@@ -123,8 +123,13 @@ export async function startWorker(): Promise<PgBoss> {
     // a no-op when nothing is pending / email unconfigured).
     const shops = await selectInstalledShops(prismaRootExec());
     for (const id of shops) await enqueueRestockDrain(id).catch(() => {});
+    // Phase 14e E4: self-healing stale-stats check — detect (read-only, app_runtime)
+    // stale planner stats on the 7 build-output tables and, if stale and the
+    // maintenance connection is configured, run the bounded least-privilege ANALYZE.
+    // Throttled to once per interval, idempotent, never throws.
+    const selfHeal = await runStatsSelfHeal(prismaRootExec()).catch(() => ({ ran: false, stale: [] as string[] }));
     logger.info(
-      { enqueued: n, signalsPurged: purged, partitionsEnsured: parts.ensured.length, partitionsDropped: parts.dropped, rollupShops: rolled, reconciled: reconciled.drifted, restock, confirmSwept },
+      { enqueued: n, signalsPurged: purged, partitionsEnsured: parts.ensured.length, partitionsDropped: parts.dropped, rollupShops: rolled, reconciled: reconciled.drifted, restock, confirmSwept, statsSelfHeal: { ran: selfHeal.ran, stale: selfHeal.stale.length } },
       "reconciliation tick",
     );
   });
